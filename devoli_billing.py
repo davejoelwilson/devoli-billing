@@ -1,12 +1,14 @@
 import pandas as pd
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from xero_auth import XeroTokenManager, XeroAuth
 import requests
 from dotenv import load_dotenv
 from fuzzywuzzy import fuzz
 from typing import Dict, Optional
 import json
+import re
+import streamlit as st
 
 class DevoliBilling:
     def __init__(self, simulation_mode=False):
@@ -23,183 +25,393 @@ class DevoliBilling:
         
         # Add simulation mode flag
         self.simulation_mode = simulation_mode
+        
+        # Add rates as class attribute
+        self.rates = {
+            'Australia': 0.14,
+            'Local': 0.05,
+            'Mobile': 0.12,
+            'National': 0.05
+        }
+        
+        # Load customer mapping silently
+        self.load_customer_mapping()
+        
+        # Initialize Xero connection once
+        self.ensure_xero_connection(force_refresh=True)  # Force initial refresh
     
+    # Pre-compiled regex patterns
+    CALLS_PATTERN = re.compile(r'(?:.*?\()(\d+) calls? - ((?:\d+ days? )?[\d:]+)\)')
+    TRUNK_PATTERN = re.compile(r'trunk: (\d+)')
+    DURATION_PATTERN = re.compile(r'(?:(\d+) days? )?(\d{1,2}):(\d{2}):(\d{2})')
+
+    # Add these as class constants
+    SPECIAL_CUSTOMERS = {
+        'the service company': {
+            'base_fee': 55.00,
+            'default_number': '6492003366',
+            'account_code': '43850',
+            'rates': {
+                'local': 0.05,
+                'mobile': 0.012,
+                'national': 0.05,
+                'tfree_mobile': 0.28,
+                'tfree_national': 0.10,
+                'tfree_australia': 0.14,
+                'other': 0.14
+            }
+        }
+    }
+    
+    STANDARD_RATES = {
+        'local': 0.05,
+        'mobile': 0.012,
+        'australia': 0.014,
+        'national': 0.05,
+        'other': 0.14
+    }
+
     def load_csv(self, file_path):
         """Load and validate the Devoli billing CSV"""
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Billing CSV file not found: {file_path}")
             
-        self.billing_data = pd.read_csv(file_path)
-        print(f"Loaded {len(self.billing_data)} billing items")
-        return self.billing_data
+        # Load CSV with all columns
+        df = pd.read_csv(file_path)
+        
+        # Define required columns and their mappings
+        required_columns = {
+            'Invoice Number': 'invoice_number',
+            'Date': 'invoice_date', 
+            'Amount': 'amount',
+            'Customer Name': 'customer_name',
+            'Description': 'description'
+        }
+        
+        # Optional columns with defaults
+        optional_columns = {
+            'Item Id': 'item_id',
+            'Short Description': 'short_description',
+            'Tax Rate': 'tax_rate',
+            'Product Type': 'product_type',
+            'Service Type': 'service_type',
+            'Service Item': 'service_number',
+            'Start Date': 'start_date',
+            'End Date': 'end_date'
+        }
+        
+        # Verify required columns exist
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns: {', '.join(missing)}")
+        
+        # Rename required columns
+        df = df.rename(columns=required_columns)
+        
+        # Rename optional columns that exist
+        for old_col, new_col in optional_columns.items():
+            if old_col in df.columns:
+                df = df.rename(columns={old_col: new_col})
+        
+        # Clean data
+        df['customer_name'] = df['customer_name'].str.strip()
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+        
+        # Convert dates
+        date_columns = ['start_date', 'end_date', 'invoice_date']
+        for col in date_columns:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors='coerce')
+        
+        # Add total column if needed
+        if 'total' not in df.columns:
+            df['total'] = df['amount']
+        
+        print(f"\nLoaded {len(df)} billing items")
+        print("\nColumns:", df.columns.tolist())
+        
+        self.billing_data = df
+        return df
         
     def group_by_customer(self):
         """Group billing items by customer and calculate totals"""
         if self.billing_data is None:
             raise ValueError("No billing data loaded. Call load_csv first.")
             
-        # Group by customer and calculate totals
+        # Clean customer names once
+        self.billing_data['customer_name'] = self.billing_data['customer_name'].str.strip()
+        
+        # Use groupby iterator for efficiency
+        customer_items = {}
+        
+        # Group once and iterate over groups silently
+        for customer, items in self.billing_data.groupby('customer_name'):
+            customer_items[customer] = items
+        
+        # Get summary data
         grouped = self.billing_data.groupby('customer_name').agg({
             'amount': 'sum',
             'invoice_date': 'first',
-            'start_date': 'first',
+            'start_date': 'first', 
             'end_date': 'first'
         }).reset_index()
         
-        # Get line items for each customer
-        customer_items = {}
-        print("\nCustomer Summary:")
-        for customer in grouped['customer_name']:
-            items = self.billing_data[self.billing_data['customer_name'] == customer]
-            customer_items[customer] = items
-            print(f"{customer}: ${items['amount'].sum():.2f} ({len(items)} items)")
-            
         return grouped, customer_items
     
-    def ensure_xero_connection(self):
-        """Ensure we have valid Xero tokens"""
+    def ensure_xero_connection(self, force_refresh=False):
+        """Ensure we have a valid Xero connection"""
         try:
-            self.token_manager.refresh_token_if_expired()
-            return self.token_manager.get_auth_headers()
+            # Use session state to store headers
+            if not force_refresh and 'xero_headers' in st.session_state:
+                return st.session_state.xero_headers
+            
+            # Force token refresh to ensure we have valid tokens
+            self.token_manager.refresh_token_if_expired(force_refresh=force_refresh)
+            
+            # Get headers with fresh token
+            headers = self.token_manager.get_auth_headers()
+            
+            # Test connection silently
+            response = requests.get(
+                "https://api.xero.com/connections",
+                headers=headers
+            )
+            response.raise_for_status()
+            
+            # Get tenant ID if not set
+            if not self.token_manager.tokens.get('tenant_id'):
+                tenants = response.json()
+                if tenants:
+                    self.token_manager.set_tenant_id(tenants[0]['tenantId'])
+            
+            # Store headers in session state
+            st.session_state.xero_headers = headers
+            return headers
+            
         except Exception as e:
-            print(f"Error with Xero connection: {str(e)}")
+            st.error(f"Xero connection error: {str(e)}")
             raise
-        
-    def create_xero_invoice(self, customer_name, items):
-        """Create or simulate invoice creation in Xero for a customer"""
-        # Get Xero name from mapping
-        xero_name = self.customer_mapping.get(customer_name)
-        if not xero_name:
-            print(f"⚠️ Skipping {customer_name} - no mapping found")
-            return None
-        
-        # Skip customers marked as [IGNORE]
-        if xero_name == '[IGNORE]':
-            print(f"ℹ️ Skipping {customer_name} - marked as [IGNORE]")
-            return None
 
-        # Group similar items
-        grouped_items = {}
-        ddi_details = []  # Store DDI details for notes
+    def format_call_description(self, call_data):
+        """Format calling charges description with details"""
+        lines = ["Devoli calling charges:"]
         
-        for _, item in items.iterrows():
-            # Extract the base product type (e.g., "DDI", "SIP Line & DDI", etc.)
-            description_parts = item['description'].split(' - ')
-            product_type = description_parts[1] if len(description_parts) > 1 else description_parts[0]
-            
-            # Create a key for grouping (product type + unit amount)
-            key = f"{product_type}_{item['amount']}"
-            
-            if key not in grouped_items:
-                grouped_items[key] = {
-                    'description': product_type,
-                    'quantity': 0,
-                    'unit_amount': float(item['amount']),
-                    'period': f"{item['start_date']} - {item['end_date']}",
-                    'details': []
-                }
-            
-            grouped_items[key]['quantity'] += float(item['quantity'])
-            
-            # Store DDI details for notes
-            if 'DDI' in product_type:
-                ddi_number = description_parts[2].strip() if len(description_parts) > 2 else ''
-                ddi_details.append(f"{ddi_number} ({product_type})")
-            
-            # Store full line details
-            grouped_items[key]['details'].append(item['description'])
+        # Only add call types that have calls
+        for call_type in ['australia', 'local', 'mobile', 'national']:
+            if call_data[call_type]['count'] > 0:
+                type_name = call_type.title()
+                count = call_data[call_type]['count']
+                duration = call_data[call_type]['duration']
+                lines.append(f"{type_name} Calls ({count} calls - {duration})")
+        
+        # If no calls, show zeros
+        if len(lines) == 1:
+            lines.extend([
+                "Australia Calls (0 calls - 00:00:00)",
+                "Local Calls (0 calls - 00:00:00)",
+                "Mobile Calls (0 calls - 00:00:00)",
+                "National Calls (0 calls - 00:00:00)"
+            ])
+        
+        return "\n".join(lines)
 
-        # Format line items for Xero
-        line_items = []
-        total_amount = 0
-        
-        for key, group in grouped_items.items():
-            amount = group['unit_amount'] * group['quantity']
-            total_amount += amount
-            
-            # Create main line item
-            description = (f"{group['description']}\n"
-                          f"Period: {group['period']}")
-            
-            line_items.append({
-                "Description": description,
-                "Quantity": group['quantity'],
-                "UnitAmount": group['unit_amount'],
-                "AccountCode": "200",
-                "TaxType": "OUTPUT2"
-            })
+    def format_duration(self, duration):
+        """Format duration in HH:MM:SS format"""
+        # Convert minutes to HH:MM:SS
+        hours = duration // 60
+        minutes = duration % 60
+        return f"{hours:02d}:{minutes:02d}:00"
 
-        # Add DDI details as a note line item if there are DDIs
-        if ddi_details:
-            ddi_note = "DDI Details:\n" + "\n".join(sorted(ddi_details))
-            line_items.append({
-                "Description": ddi_note,
-                "Quantity": 0,
-                "UnitAmount": 0,
-                "AccountCode": "200",
-                "TaxType": "OUTPUT2"
-            })
+    def calculate_call_charges(self, data: pd.DataFrame) -> float:
+        """Calculate charges based on call durations and rates"""
+        total_charge = 0
+        call_details = []  # Store details for later display
+        
+        # Use self.rates instead of local rates dictionary
+        for call_type, rate in self.rates.items():
+            mask = data['description'].str.contains(call_type, case=False, na=False)
+            if mask.any():
+                calls = data[mask]['description'].iloc[0]
+                count, duration = self.parse_call_info(calls)
+                if count > 0:
+                    minutes = self.duration_to_minutes(duration)
+                    charge = minutes * rate
+                    total_charge += charge
+                    
+                    # Store details instead of printing
+                    call_details.append({
+                        'type': call_type,
+                        'count': count,
+                        'duration': duration,
+                        'minutes': minutes,
+                        'rate': rate,
+                        'charge': charge
+                    })
+        
+        return round(total_charge, 2), call_details
 
-        # In simulation mode, print what would have been created
-        print(f"\n=== SIMULATED DRAFT INVOICE: {customer_name} ===")
-        print(f"Xero Name: {xero_name}")
-        print(f"Total Amount: ${total_amount:.2f}")
-        print(f"Date Range: {items['start_date'].iloc[0]} - {items['end_date'].iloc[0]}")
-        print(f"Items: {len(grouped_items)}")
-        
-        print("\nLine Items:")
-        for item in line_items:
-            if item['Quantity'] > 0:  # Regular line item
-                print(f"\n- {item['Description']}")
-                print(f"  Quantity: {item['Quantity']}")
-                print(f"  Unit Amount: ${item['UnitAmount']:.2f}")
-                print(f"  Total: ${item['Quantity'] * item['UnitAmount']:.2f}")
-            else:  # Note line item
-                print(f"\n{item['Description']}")
-        
-        print("\nStatus: DRAFT (simulation only - no invoice created)")
-        print("=" * 50)
-        
-        return {
-            "status": "simulated",
-            "customer": customer_name,
-            "xero_name": xero_name,
-            "total_amount": total_amount,
-            "line_items": len(line_items),
-            "date_range": f"{items['start_date'].iloc[0]} - {items['end_date'].iloc[0]}",
-            "grouped_items": grouped_items
-        }
+    def create_xero_invoice(self, customer, customer_data, invoice_params=None):
+        """Create a draft invoice in Xero"""
+        try:
+            # Normalize column names to lowercase for case-insensitive comparison
+            customer_data.columns = customer_data.columns.str.lower()
+            
+            # Validate and set defaults for invoice params
+            if invoice_params is None:
+                invoice_params = {}
+            
+            today = datetime.now().strftime('%Y-%m-%d')
+            invoice_params = {
+                'date': invoice_params.get('date', today),
+                'due_date': invoice_params.get('due_date', 
+                    (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')),
+                'description': invoice_params.get('description', ''),
+                'line_items': invoice_params.get('line_items', [])
+            }
+            
+            # Check if this is The Service Company
+            is_service_company = customer.strip().lower() == 'the service company'
+            account_code = self.SPECIAL_CUSTOMERS['the service company']['account_code'] if is_service_company else '43850'
+            
+            # Create line items
+            line_items = []
+            
+            if is_service_company:
+                # Use pre-processed line items if available
+                if invoice_params.get('line_items'):
+                    line_items = invoice_params['line_items']
+                else:
+                    # Add base fee line item
+                    line_items.append({
+                        "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
+                        "Quantity": 1.0,
+                        "UnitAmount": self.SPECIAL_CUSTOMERS['the service company']['base_fee'],
+                        "AccountCode": account_code,
+                        "TaxType": "OUTPUT2"
+                    })
+                    
+                    # Process the data using ServiceCompanyBilling
+                    service_processor = ServiceCompanyBilling()
+                    results = service_processor.process_billing(customer_data)
+                    
+                    # Add regular number line item if exists
+                    if results['regular_number']['calls']:
+                        description = ['6492003366']
+                        for call in results['regular_number']['calls']:
+                            description.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
+                        
+                        line_items.append({
+                            "Description": '\n'.join(description),
+                            "Quantity": 1.0,
+                            "UnitAmount": float(results['regular_number']['total']),  # Ensure float
+                            "AccountCode": account_code,
+                            "TaxType": "OUTPUT2"
+                        })
+                    
+                    # Add toll free number line items
+                    for number, data in results['numbers'].items():
+                        if data['calls']:
+                            description = [number]
+                            for call in data['calls']:
+                                description.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+                            
+                            line_items.append({
+                                "Description": '\n'.join(description),
+                                "Quantity": 1.0,
+                                "UnitAmount": float(data['total']),  # Ensure float
+                                "AccountCode": account_code,
+                                "TaxType": "OUTPUT2"
+                            })
+            else:
+                # Standard customer - calculate total charges
+                charges, _ = self.calculate_call_charges(customer_data)
+                line_items.append({
+                    "Description": invoice_params.get('description', 'Devoli Calling Charges'),
+                    "Quantity": 1.0,
+                    "UnitAmount": float(charges),  # Ensure float
+                    "AccountCode": account_code,
+                    "TaxType": "OUTPUT2"
+                })
+            
+            # Find Xero contact
+            xero_name = self.customer_mapping.get(customer.strip())
+            if not xero_name:
+                raise ValueError(f"No Xero mapping found for {customer}")
+            
+            contacts = self.fetch_xero_contacts()
+            if not contacts:
+                raise ValueError("Failed to fetch Xero contacts")
+            
+            xero_contact = None
+            search_name = xero_name.lower()
+            for contact in contacts:
+                if contact['Name'].lower() == search_name:
+                    xero_contact = contact
+                    break
+            
+            if not xero_contact:
+                raise ValueError(f"Contact '{xero_name}' not found in Xero")
+
+            # Build invoice data
+            invoice_data = {
+                "Type": "ACCREC",
+                "Contact": {"ContactID": xero_contact['ContactID']},
+                "Date": invoice_params['date'],
+                "DueDate": invoice_params['due_date'],
+                "LineItems": line_items,
+                "Status": "DRAFT",
+                "LineAmountTypes": "Exclusive",
+                "Reference": invoice_params.get('reference', 'Devoli Calling Charges')
+            }
+
+            # Create invoice
+            if not self.simulation_mode:
+                headers = self.ensure_xero_connection()
+                headers['Accept'] = 'application/json'
+                
+                response = requests.post(
+                    "https://api.xero.com/api.xro/2.0/Invoices",
+                    headers=headers,
+                    json=invoice_data
+                )
+                response.raise_for_status()
+                return response.json()
+            else:
+                return {"status": "simulated", "data": invoice_data}
+            
+        except Exception as e:
+            st.error(f"Error creating invoice: {str(e)}")
+            if hasattr(e, 'response'):
+                st.error(f"Response: {e.response.text}")
+            raise
 
     def fetch_xero_contacts(self):
         """Fetch all contacts from Xero"""
         headers = self.ensure_xero_connection()
         
         try:
+            # Add Accept header to request JSON
+            headers['Accept'] = 'application/json'
+            
             response = requests.get(
                 "https://api.xero.com/api.xro/2.0/Contacts",
                 headers=headers
             )
             response.raise_for_status()
             
-            # Debug information
-            print("\nDebug: Xero API Response")
-            print(f"Status Code: {response.status_code}")
-            print(f"Content-Type: {response.headers.get('Content-Type')}")
-            print("Response Preview:", response.text[:200], "...\n")
-            
             try:
                 data = response.json()
                 if 'Contacts' in data:
                     self.xero_contacts = data['Contacts']
-                    print(f"Fetched {len(self.xero_contacts)} contacts from Xero")
                     return self.xero_contacts
                 else:
                     print("Warning: No 'Contacts' key in response")
                     print("Response data:", data)
                     return []
             except json.JSONDecodeError as e:
-                print(f"JSON Decode Error: {str(e)}")
-                print("Raw Response:", response.text[:500])
+                print(f"Error: Received XML instead of JSON")
+                print("Response headers:", response.headers)
+                print("Response content type:", response.headers.get('Content-Type'))
                 return []
                 
         except requests.exceptions.RequestException as e:
@@ -213,23 +425,30 @@ class DevoliBilling:
         """Find the best matching Xero contact for a Devoli customer name"""
         if not self.xero_contacts:
             self.fetch_xero_contacts()
-            
+        
+        if not hasattr(self, '_contact_names_cache'):
+            # Create cache of lowercase names
+            self._contact_names_cache = {
+                contact['ContactID']: contact['Name'].strip().lower()
+                for contact in self.xero_contacts
+            }
+        
+        # Clean the Devoli name once
+        devoli_name = devoli_name.strip().lower()
+        
+        # Try exact match first (using cache)
+        for contact in self.xero_contacts:
+            if self._contact_names_cache[contact['ContactID']] == devoli_name:
+                return contact
+        
+        # Fuzzy match if needed
         best_match = None
         best_score = 0
         
-        # Clean the Devoli name
-        devoli_name = devoli_name.strip().lower()
-        
+        # Use pre-computed lowercase names
         for contact in self.xero_contacts:
-            xero_name = contact['Name'].strip().lower()
-            
-            # Try exact match first
-            if xero_name == devoli_name:
-                return contact
-                
-            # Try fuzzy matching
-            score = fuzz.ratio(xero_name, devoli_name)
-            if score > best_score and score > 80:  # 80% similarity threshold
+            score = fuzz.ratio(self._contact_names_cache[contact['ContactID']], devoli_name)
+            if score > best_score and score > 80:
                 best_score = score
                 best_match = contact
         
@@ -263,174 +482,427 @@ class DevoliBilling:
 
     def load_customer_mapping(self):
         """Load customer mapping from CSV"""
-        if not os.path.exists('customer_mapping.csv'):
-            raise FileNotFoundError("Customer mapping file not found. Please run create_customer_mapping.py first")
+        try:
+            if not os.path.exists('customer_mapping.csv'):
+                raise FileNotFoundError("Customer mapping file not found")
             
-        mapping_df = pd.read_csv('customer_mapping.csv')
+            mapping_df = pd.read_csv('customer_mapping.csv')
+            
+            # Create mapping dictionary without debug prints
+            self.customer_mapping = dict(zip(
+                mapping_df['devoli_name'].str.strip(),
+                mapping_df['actual_xero_name'].str.strip()
+            ))
+            
+        except Exception as e:
+            st.error(f"Error loading customer mapping: {str(e)}")
+            raise
+
+    def parse_call_info(self, description: str) -> tuple[int, str]:
+        """Parse call count and duration from description"""
+        match = self.CALLS_PATTERN.search(description)
+        if not match:
+            return 0, "00:00:00"
         
-        # Only use rows where actual_xero_name is filled in
-        mapping_df = mapping_df[mapping_df['actual_xero_name'].notna() & (mapping_df['actual_xero_name'] != '')]
+        num_calls = int(match.group(1))
+        duration = match.group(2)
         
-        # Create mapping dictionary
-        self.customer_mapping = dict(zip(mapping_df['devoli_name'], mapping_df['actual_xero_name']))
-        print(f"Loaded {len(self.customer_mapping)} customer mappings")
+        # Standardize duration format
+        duration = self.parse_duration(duration)
+        
+        return num_calls, duration
+
+    def get_call_type(self, description):
+        """Determine call type from description"""
+        # Handle special cases first
+        if "TFree Inbound" in description:
+            if "AUS Mobile" in description:
+                return "TFree Mobile"
+            elif "AUS National" in description:
+                return "TFree National"
+            elif "Mobile" in description:
+                return "TFree Mobile"
+            elif "National" in description:
+                return "TFree National"
+            elif "Australia" in description:
+                return "TFree Australia"
+        
+        # Handle standard call types
+        if "Australia" in description:
+            return "Australian Calls"
+        elif "Mobile" in description:
+            return "Mobile Calls"
+        elif "National" in description:
+            return "National Calls"
+        elif "Local" in description:
+            return "Local Calls"
+        else:
+            return "Other Calls"
+
+    def get_service_number(self, description: str) -> Optional[str]:
+        """Extract service number from description"""
+        match = self.TRUNK_PATTERN.search(description)
+        return match.group(1) if match else None
+
+    def process_calling_charges(self, data: pd.DataFrame) -> Dict:
+        """Process calling charges with vectorized operations where possible"""
+        # Standard rates
+        rates = {
+            'Australian Calls': 0.014,
+            'Mobile Calls': 0.012,
+            'National Calls': 0.05,
+            'Local Calls': 0.05,
+            'Other Calls': 0.14,
+            'TFree Mobile': 0.28,
+            'TFree National': 0.10,
+            'TFree Australia': 0.14
+        }
+        
+        # Create call type mask
+        call_mask = (
+            data['description'].str.contains('Calls', case=False, na=False) |
+            data['description'].str.contains('TFree', case=False, na=False)
+        )
+        call_data = data[call_mask].copy()
+        
+        # Extract call info using vectorized operations
+        call_data['call_info'] = call_data['description'].apply(self.parse_call_info)
+        call_data['num_calls'] = call_data['call_info'].apply(lambda x: x[0])
+        call_data['duration'] = call_data['call_info'].apply(lambda x: x[1])
+        call_data['minutes'] = call_data['duration'].apply(self.duration_to_minutes)
+        call_data['call_type'] = call_data['description'].apply(self.get_call_type)
+        call_data['rate'] = call_data['call_type'].map(rates)
+        call_data['charge'] = call_data['minutes'] * call_data['rate']
+        
+        results = {}
+        
+        # Group by customer
+        for customer, group in call_data.groupby('customer_name'):
+            results[customer] = {
+                'charges': {},
+                'total': 0,
+                'numbers': {}
+            }
+            
+            # Calculate charges by call type
+            type_charges = group.groupby('call_type')['charge'].sum()
+            results[customer]['charges'].update(type_charges.to_dict())
+            results[customer]['total'] = group['charge'].sum()
+            
+            # Handle The Service Company special case
+            if customer == "The Service Company":
+                service_numbers = group['service_number'].unique()
+                for number in service_numbers:
+                    if not pd.isna(number):
+                        number_data = group[group['service_number'] == number]
+                        results[customer]['numbers'][number] = {
+                            'charges': number_data.groupby('call_type')['charge'].sum().to_dict(),
+                            'total': number_data['charge'].sum()
+                        }
+        
+        return results
+
+    def format_invoice_lines(self, customer_name, charges, items):
+        """Format invoice line items"""
+        if customer_name == "The Service Company":
+            line_items = []
+            
+            # Add base fee
+            line_items.append({
+                "Description": "Base Fee",
+                "Quantity": 1,
+                "UnitAmount": 55.0,
+                "AccountCode": "IS10240",
+                "TaxType": "OUTPUT2"
+            })
+            
+            # Add per-number charges
+            for number, details in charges['numbers'].items():
+                description = f"Calling Charges for {number}:\n"
+                for call_type, amount in details['charges'].items():
+                    if amount > 0:
+                        description += f"{call_type}: ${amount:.2f}\n"
+                
+                line_items.append({
+                    "Description": description,
+                    "Quantity": 1,
+                    "UnitAmount": details['total'],
+                    "AccountCode": "IS10240",
+                    "TaxType": "OUTPUT2"
+                })
+            
+            return line_items
+        else:
+            # Standard formatting for other customers
+            description = "Devoli Calling Charges:\n"
+            total = 0
+            
+            for call_type, amount in charges['charges'].items():
+                if amount > 0:
+                    description += f"{call_type}: ${amount:.2f}\n"
+                    total += amount
+            
+            return [{
+                "Description": description,
+                "Amount": total,
+                "AccountCode": "43850"
+            }]
+
+    def process_products(self, data: pd.DataFrame) -> Dict:
+        """Process all product types from invoice data using vectorized operations"""
+        results = {
+            'calling_charges': {},
+            'ddi_charges': {},
+            'sip_lines': {},
+            'ufb_services': {},
+            'other_services': {}
+        }
+        
+        # Create masks for each product type
+        ddi_mask = data['description'].str.contains('DDI', case=False, na=False)
+        sip_mask = data['description'].str.contains('SIP Line', case=False, na=False)
+        ufb_mask = data['description'].str.apply(
+            lambda x: '/29 Range' in str(x) or 'Static IP' in str(x)
+        )
+        
+        # Group by customer and product type
+        for customer in data['customer_name'].unique():
+            customer_data = data[data['customer_name'] == customer]
+            
+            # Initialize customer in all categories
+            for category in results:
+                if customer not in results[category]:
+                    results[category][customer] = {
+                        'charges': [],
+                        'total': 0
+                    }
+            
+            # Process DDI charges
+            ddi_items = customer_data[ddi_mask]
+            if not ddi_items.empty:
+                charges = ddi_items.apply(
+                    lambda row: {
+                        'description': row['description'],
+                        'amount': float(row['amount']),
+                        'period': f"{row['start_date']} - {row['end_date']}",
+                        'number': str(row.get('service_number', ''))
+                    },
+                    axis=1
+                ).tolist()
+                
+                results['ddi_charges'][customer]['charges'].extend(charges)
+                results['ddi_charges'][customer]['total'] = ddi_items['amount'].sum()
+            
+            # Process SIP lines
+            sip_items = customer_data[sip_mask]
+            if not sip_items.empty:
+                charges = sip_items.apply(
+                    lambda row: {
+                        'description': row['description'],
+                        'amount': float(row['amount']),
+                        'period': f"{row['start_date']} - {row['end_date']}",
+                        'number': str(row.get('service_number', ''))
+                    },
+                    axis=1
+                ).tolist()
+                
+                results['sip_lines'][customer]['charges'].extend(charges)
+                results['sip_lines'][customer]['total'] = sip_items['amount'].sum()
+            
+            # Process UFB services
+            ufb_items = customer_data[ufb_mask]
+            if not ufb_items.empty:
+                charges = ufb_items.apply(
+                    lambda row: {
+                        'description': row['description'],
+                        'amount': float(row['amount']),
+                        'period': f"{row['start_date']} - {row['end_date']}",
+                        'service': str(row.get('service_number', ''))
+                    },
+                    axis=1
+                ).tolist()
+                
+                results['ufb_services'][customer]['charges'].extend(charges)
+                results['ufb_services'][customer]['total'] = ufb_items['amount'].sum()
+            
+            # Process other services (everything else)
+            other_mask = ~(ddi_mask | sip_mask | ufb_mask)
+            other_items = customer_data[other_mask]
+            if not other_items.empty:
+                charges = other_items.apply(
+                    lambda row: {
+                        'description': row['description'],
+                        'amount': float(row['amount']),
+                        'period': f"{row['start_date']} - {row['end_date']}"
+                    },
+                    axis=1
+                ).tolist()
+                
+                results['other_services'][customer]['charges'].extend(charges)
+                results['other_services'][customer]['total'] = other_items['amount'].sum()
+        
+        return results
+
+    def duration_to_minutes(self, time_str: str) -> int:
+        """Convert any duration string to total minutes"""
+        if not time_str:
+            return 0
+            
+        # First convert to standard HH:MM:SS
+        std_time = self.parse_duration(time_str)
+        
+        # Split and convert
+        hours, minutes, seconds = map(int, std_time.split(':'))
+        
+        # Calculate total minutes, rounding up if there are seconds
+        total_minutes = (hours * 60) + minutes
+        if seconds > 0:
+            total_minutes += 1
+            
+        return total_minutes
+
+    def parse_duration(self, time_str: str) -> str:
+        """Convert any duration string to HH:MM:SS format
+        
+        Handles formats:
+        - HH:MM:SS
+        - N days HH:MM:SS
+        - MM:SS
+        """
+        if not time_str or time_str.strip() == "00:00:00":
+            return "00:00:00"
+            
+        match = self.DURATION_PATTERN.search(time_str)
+        if not match:
+            return "00:00:00"
+            
+        days = int(match.group(1) or 0)
+        hours = int(match.group(2))
+        minutes = int(match.group(3))
+        seconds = int(match.group(4))
+        
+        # Convert everything to hours:minutes:seconds
+        total_hours = (days * 24) + hours
+        
+        return f"{total_hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def load_voip_customers(self, df):
+        """Load only customers with VoIP/calling products"""
+        voip_products = [
+            'DDI',
+            'SIP Line',
+            'SIP Trunk',
+            'Calling',
+            'Voice'
+        ]
+        
+        # Filter for rows containing our product types silently
+        mask = df['Description'].str.contains('|'.join(voip_products), case=False, na=False)
+        voip_df = df[mask]
+        
+        # Get unique customers who have these products
+        customers = sorted(voip_df['Customer Name'].dropna().unique())
+        
+        return customers, voip_df
+
+    def get_customer_rates(self, customer_name: str) -> Dict[str, float]:
+        """Get customer-specific rates with standardized keys"""
+        customer_key = customer_name.strip().lower()
+        if customer_key in self.SPECIAL_CUSTOMERS:
+            return self.SPECIAL_CUSTOMERS[customer_key]['rates']
+        return self.STANDARD_RATES
+
+    def calculate_calling_charges(self, call_data: Dict, customer_name: str = '') -> float:
+        """Calculate calling charges with standardized rate keys"""
+        rates = self.get_customer_rates(customer_name)
+        total_charges = 0
+        
+        for call_type, data in call_data.items():
+            if data['count'] > 0:
+                # Use total_seconds for more accurate calculation
+                minutes = (data['total_seconds'] + 59) // 60  # Round up
+                rate = rates.get(call_type, rates['other'])
+                total_charges += minutes * rate
+        
+        return round(total_charges, 2)
+
+    def aggregate_call_data(self, customer_df: pd.DataFrame) -> Dict:
+        """Aggregate all call data for a customer using vectorized operations"""
+        # Initialize call data structure
+        call_data = {
+            'australia': {'count': 0, 'duration': '00:00:00', 'total_seconds': 0},
+            'local': {'count': 0, 'duration': '00:00:00', 'total_seconds': 0},
+            'mobile': {'count': 0, 'duration': '00:00:00', 'total_seconds': 0},
+            'national': {'count': 0, 'duration': '00:00:00', 'total_seconds': 0},
+            'other': {'count': 0, 'duration': '00:00:00', 'total_seconds': 0}
+        }
+        
+        # Create masks for each call type
+        type_masks = {
+            'australia': customer_df['description'].str.contains('Australia', case=False, na=False),
+            'local': customer_df['description'].str.contains('Local', case=False, na=False),
+            'mobile': customer_df['description'].str.contains('Mobile', case=False, na=False),
+            'national': customer_df['description'].str.contains('National', case=False, na=False)
+        }
+        
+        # Process each call type
+        for call_type, mask in type_masks.items():
+            if not customer_df[mask].empty:
+                # Get call info for all matching rows
+                calls = customer_df[mask]['description'].apply(self.parse_call_info)
+                
+                # Sum up counts and durations
+                call_data[call_type]['count'] = sum(c[0] for c in calls)
+                
+                # Convert all durations to seconds and sum
+                total_seconds = sum(
+                    sum(int(x) * m for x, m in zip(d[1].split(':'), [3600, 60, 1]))
+                    for _, d in calls
+                )
+                
+                # Store total duration in HH:MM:SS
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                seconds = total_seconds % 60
+                call_data[call_type]['duration'] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                call_data[call_type]['total_seconds'] = total_seconds
+        
+        # Handle other calls (those not matching any specific type)
+        other_mask = ~sum(type_masks.values())
+        if not customer_df[other_mask].empty:
+            calls = customer_df[other_mask]['description'].apply(self.parse_call_info)
+            call_data['other']['count'] = sum(c[0] for c in calls)
+            total_seconds = sum(
+                sum(int(x) * m for x, m in zip(d[1].split(':'), [3600, 60, 1]))
+                for _, d in calls
+            )
+            hours = total_seconds // 3600
+            minutes = (total_seconds % 3600) // 60
+            seconds = total_seconds % 60
+            call_data['other']['duration'] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            call_data['other']['total_seconds'] = total_seconds
+        
+        return call_data
+
+    def process_service_company(self, df):
+        """Process The Service Company data silently"""
+        # Filter TFree rows silently
+        tfree_mask = df['short_description'].str.startswith('64800', na=False)
+        tfree_rows = df[tfree_mask]
+        
+        # Get unique customers silently
+        customers = sorted(df[tfree_mask]['customer_name'].unique())
+        
+        # Rest of the processing...
 
 def main():
-    print("\n=== Devoli Billing Processing (SIMULATION MODE) ===\n")
+    st.set_page_config(page_title="Devoli Billing", layout="wide")
     
-    # Create output directory if it doesn't exist
-    os.makedirs('output', exist_ok=True)
+    # Initialize DevoliBilling only once with force_refresh=True
+    if 'billing_processor' not in st.session_state:
+        st.session_state.billing_processor = DevoliBilling(simulation_mode=False)
     
-    # Initialize
-    try:
-        processor = DevoliBilling(simulation_mode=True)
-    except ValueError as e:
-        print(f"Initialization error: {str(e)}")
-        return
-    
-    # Load product mapping
-    try:
-        print("Loading product mapping...")
-        product_mapping = pd.read_csv('product_mapping.csv')
-        print(f"Loaded {len(product_mapping)} products from product_mapping.csv")
-    except (FileNotFoundError, ValueError):
-        print("No product mapping found. Please ensure product_mapping.csv is in the root directory.")
-        return
-    
-    # Load CSV
-    try:
-        billing_data = processor.load_csv("bills/IT360 Limited - Devoli Summary Bill Report 133115 2024-09-30.csv")
-    except Exception as e:
-        print(f"Error loading CSV: {str(e)}")
-        return
-    
-    # Group by customer
-    try:
-        grouped_data, customer_items = processor.group_by_customer()
-    except Exception as e:
-        print(f"Error grouping data: {str(e)}")
-        return
-    
-    # Prepare data for invoice-style CSV
-    invoice_data = []
-    
-    for customer in grouped_data['customer_name']:
-        items = customer_items[customer]
-        
-        # Get customer details
-        customer_info = {
-            'invoice_type': 'HEADER',
-            'customer_name': customer,
-            'product_code': '',
-            'line_item_description': '',
-            'quantity': '',
-            'unit_price': '',
-            'line_total': '',
-            'total_amount': items['amount'].sum(),
-            'invoice_date': items['invoice_date'].iloc[0],
-            'start_date': items['start_date'].iloc[0],
-            'end_date': items['end_date'].iloc[0]
-        }
-        invoice_data.append(customer_info)
-        
-        # Group similar items
-        grouped_items = {}
-        for _, item in items.iterrows():
-            product = str(item['product']).strip() if pd.notna(item.get('product')) else ''
-            amount = float(item['amount'])
-            
-            # Look up product in mapping
-            product_info = product_mapping[
-                (product_mapping['product_code'] == product) & 
-                (product_mapping['cost'] == amount)
-            ].iloc[0] if len(product_mapping[
-                (product_mapping['product_code'] == product) & 
-                (product_mapping['cost'] == amount)
-            ]) > 0 else None
-            
-            # Use mapped sale price if available
-            sale_price = float(product_info['sale_price']) if product_info is not None else amount * 1.15
-            
-            # Create key for grouping
-            key = f"{product}_{amount}"
-            
-            if key not in grouped_items:
-                grouped_items[key] = {
-                    'product_code': product,
-                    'description': item['description'],
-                    'quantity': 0,
-                    'unit_amount': amount,
-                    'sale_price': sale_price
-                }
-            
-            grouped_items[key]['quantity'] += float(item['quantity'])
-        
-        # Add line items
-        for key, group in grouped_items.items():
-            line_item = {
-                'invoice_type': 'LINE',
-                'customer_name': customer,
-                'product_code': group['product_code'],
-                'line_item_description': group['description'],
-                'quantity': group['quantity'],
-                'unit_price': group['sale_price'],  # Use sale price instead of cost
-                'line_total': group['quantity'] * group['sale_price'],
-                'total_amount': '',
-                'invoice_date': '',
-                'start_date': '',
-                'end_date': ''
-            }
-            invoice_data.append(line_item)
-        
-        # Add a blank row for spacing
-        invoice_data.append({
-            'invoice_type': 'BLANK',
-            'customer_name': '',
-            'product_code': '',
-            'line_item_description': '',
-            'quantity': '',
-            'unit_price': '',
-            'line_total': '',
-            'total_amount': '',
-            'invoice_date': '',
-            'start_date': '',
-            'end_date': ''
-        })
-    
-    # Save to CSV
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = f'output/invoice_simulation_{timestamp}.csv'
-    
-    invoice_df = pd.DataFrame(invoice_data)
-    
-    # Format numbers
-    invoice_df['total_amount'] = invoice_df['total_amount'].apply(lambda x: f"${x:.2f}" if x != '' else '')
-    invoice_df['unit_price'] = invoice_df['unit_price'].apply(lambda x: f"${x:.2f}" if x != '' else '')
-    invoice_df['line_total'] = invoice_df['line_total'].apply(lambda x: f"${x:.2f}" if x != '' else '')
-    
-    # Reorder columns
-    column_order = [
-        'invoice_type',
-        'customer_name',
-        'product_code',
-        'line_item_description',
-        'quantity',
-        'unit_price',
-        'line_total',
-        'total_amount',
-        'invoice_date',
-        'start_date',
-        'end_date'
-    ]
-    
-    # Reorder and save
-    invoice_df = invoice_df[column_order]
-    invoice_df.to_csv(output_file, index=False)
-    
-    print(f"\nProcessing complete!")
-    print(f"Invoice details saved to: {output_file}")
-    
-    return
+    # Rest of your main code...
 
 if __name__ == "__main__":
     main()

@@ -9,6 +9,9 @@ import os
 import time
 from typing import Optional, Dict, List
 import sys
+import streamlit as st
+from dotenv import load_dotenv
+from tests.xero_auth import debug_auth_setup, start_auth_flow
 
 class XeroTokenManager:
     def __init__(self, token_file: str = 'xero_tokens.json'):
@@ -213,7 +216,7 @@ class XeroAuth:
         )
         
         print("\nOpening browser for authentication...")
-        server = StoppableHTTPServer(('localhost', 8080), XeroAuthHandler)
+        server = StoppableHTTPServer(('localhost', 8503), XeroAuthHandler)
         webbrowser.open(auth_url)
         
         server.serve_forever()
@@ -290,40 +293,33 @@ class XeroAuth:
             return []
 
 def main():
-    print("=== Xero Authentication (Debug Mode) ===")
+    st.title("=== Xero Authentication (Debug Mode) ===")
     
-    client_id = input("Enter Client ID: ").strip()
-    client_secret = input("Enter Client Secret: ").strip()
+    # Load and display environment info
+    load_dotenv()
+    env_info = debug_auth_setup()
     
-    try:
-        auth = XeroAuth(client_id, client_secret)
+    # Show current environment status
+    st.write("Current Environment Setup:")
+    if env_info['XERO_CLIENT_ID']:
+        st.success(f"Client ID: {env_info['XERO_CLIENT_ID']}")
+    else:
+        st.error("Client ID not found in environment")
         
-        print("\nStep 1: Getting authorization code...")
-        auth_code = auth.get_authorization_code()
-        
-        if not auth_code:
-            print("Failed to get authorization code")
-            return
-            
-        print("\nStep 2: Exchanging code for tokens...")
-        if not auth.exchange_code_for_tokens(auth_code):
-            print("Failed to exchange code for tokens")
-            return
-            
-        print("\nStep 3: Getting connected tenants...")
-        tenants = auth.get_connected_tenants()
-        
-        if not tenants:
-            print("No tenants connected")
-            return
-            
-        print("\nAuthentication and connection verification complete!")
-        print("Tokens have been saved to xero_tokens.json")
-        
-    except Exception as e:
-        print(f"\nError: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    if env_info['XERO_CLIENT_SECRET']:
+        st.success("Client Secret: [Found]")
+    else:
+        st.error("Client Secret not found in environment")
+    
+    # Add authentication button
+    if st.button("Start Authentication"):
+        with st.spinner("Starting authentication flow..."):
+            result = start_auth_flow()
+            if result['status'] == 'success':
+                st.success(result['message'])
+                st.write(f"Token expires at: {result['expires_at']}")
+            else:
+                st.error(result['message'])
 
 if __name__ == "__main__":
     main()

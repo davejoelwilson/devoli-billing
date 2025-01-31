@@ -1,0 +1,6 @@
+streamlit
+pandas
+python-dotenv
+fuzzywuzzy
+python-Levenshtein  # Optional, but makes fuzzywuzzy faster
+requests 

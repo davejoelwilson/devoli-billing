@@ -41,11 +41,24 @@ bills/
 output/
 *.csv
 !product_mapping.csv
+!customer_mapping.csv
 logs/
 *.log
+current_process.md
 
-# Secrets
+# Secrets and Auth
 *.key
 *.pem
 credentials.json
-token.json 
+token.json
+xero_tokens.json
+.xero_creds
+.xero_oauth2_token
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test-reports/
+test_*.py
+!test_requirements.txt 

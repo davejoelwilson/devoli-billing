@@ -647,7 +647,29 @@ def process_customer(customer_name, billing_data):
     # Rest of processing...
 
 def main():
-    st.set_page_config(page_title="Devoli Billing", layout="wide")
+    st.set_page_config(
+        page_title="Devoli Billing",
+        layout="wide",
+        initial_sidebar_state="expanded",
+        menu_items={
+            'Get Help': None,
+            'Report a bug': None,
+            'About': None
+        }
+    )
+    
+    # Set light theme as default
+    st.markdown("""
+        <style>
+        :root {
+            --primary-color: #ff4b4b;
+        }
+        .stApp {
+            background-color: white;
+            color: black;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
     # Initialize session state
     init_session_state()

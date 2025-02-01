@@ -108,4 +108,72 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Support
 
-For support, please contact the development team or raise an issue on GitHub. 
+For support, please contact the development team or raise an issue on GitHub.
+
+# Devoli Billing Analysis
+
+A streamlit application for analyzing Devoli billing data and product trends.
+
+## Features
+
+### Product Analysis Page
+
+The product analysis page provides comprehensive insights into billing data across multiple views:
+
+1. **Summary Tab**
+   - Product Summary table showing quantity and revenue by product type
+   - Top 5 Products by Revenue visualization
+   - Filters out low-quantity items for cleaner analysis
+
+2. **Customer Analysis Tab**
+   - Products by Customer matrix showing product distribution
+   - Top 10 Customers by Number of Products chart
+   - Detailed breakdown of products per customer
+
+3. **Revenue Analysis Tab**
+   - Revenue breakdown by product category
+   - Category distribution visualization
+   - Key metrics:
+     - Total Monthly Revenue
+     - Average Revenue per Customer
+     - Average Revenue per Product
+
+4. **Trends Tab**
+   - Current Month Overview with key metrics
+   - Category Breakdown showing revenue distribution
+   - Interactive time series charts:
+     - Unique Customers Over Time
+     - Total Products Over Time
+     - Total Revenue Over Time (with 3-month moving average)
+     - Revenue by Category Over Time
+   - Year-over-Year Growth Rate (when sufficient data available)
+   - Revenue Distribution pie chart
+   - Monthly data tables with detailed breakdowns
+
+## Usage
+
+1. Place invoice CSV files in the `bills` directory
+2. Run the Streamlit app:
+   ```bash
+   streamlit run streamlit_app.py
+   ```
+3. Select an invoice from the dropdown to analyze
+4. Navigate through the tabs to view different aspects of the analysis
+
+## Data Requirements
+
+Invoice files should:
+- Be in CSV format
+- Start with "Invoice_"
+- Include date in filename (e.g., "Invoice_XXX_2024-01.csv")
+- Contain columns:
+  - description
+  - amount
+  - customer name
+
+## Dependencies
+
+- streamlit
+- pandas
+- plotly
+- python-dateutil 

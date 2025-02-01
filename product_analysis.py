@@ -748,6 +748,40 @@ def product_analysis_page():
                             delta_color="normal"
                         )
                     
+                    # Add customer movement analysis
+                    st.subheader("Customer Movement")
+                    
+                    # Get sets of customers from both months
+                    prev_customers_set = set(prev_df['customer name'].unique())
+                    curr_customers_set = set(df['customer name'].unique())
+                    
+                    # Find added and removed customers
+                    added_customers = curr_customers_set - prev_customers_set
+                    removed_customers = prev_customers_set - curr_customers_set
+                    
+                    # Create two columns for display
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("##### 🟢 New Customers")
+                        if added_customers:
+                            for customer in sorted(added_customers):
+                                revenue = df[df['customer name'] == customer]['amount'].sum()
+                                st.write(f"- {customer} (${revenue:,.2f})")
+                        else:
+                            st.write("*No new customers*")
+                    
+                    with col2:
+                        st.markdown("##### 🔴 Churned Customers")
+                        if removed_customers:
+                            for customer in sorted(removed_customers):
+                                prev_revenue = prev_df[prev_df['customer name'] == customer]['amount'].sum()
+                                st.write(f"- {customer} (${prev_revenue:,.2f})")
+                        else:
+                            st.write("*No churned customers*")
+                    
+                    st.divider()
+                    
                     # 2. Category Changes
                     st.subheader("Changes by Category")
                     

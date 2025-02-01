@@ -6,9 +6,20 @@ import re
 import os
 import traceback
 from datetime import datetime
+import numpy as np
 
 def process_all_invoices():
-    """Process all invoice files and return monthly metrics"""
+    """Process all invoice files and return monthly metrics.
+    
+    Reads all invoice CSV files from the bills directory and processes them to generate:
+    1. Monthly metrics (unique customers, total quantity, total revenue)
+    2. Category metrics (revenue and quantity by product category)
+    
+    Returns:
+        tuple: (monthly_metrics_df, category_metrics_df)
+            - monthly_metrics_df: DataFrame with columns [date, unique_customers, total_quantity, total_revenue]
+            - category_metrics_df: DataFrame with columns [date, category, revenue, quantity]
+    """
     monthly_metrics = []
     category_metrics = []
     
@@ -62,7 +73,20 @@ def process_all_invoices():
     return pd.DataFrame(monthly_metrics), pd.DataFrame(category_metrics)
 
 def clean_product_description(desc: str) -> str:
-    """Clean product descriptions by removing dates and extra info"""
+    """Clean and standardize product descriptions.
+    
+    Processes raw product descriptions to extract standardized product types:
+    - Handles various call types (Mobile, Local, Australia, International)
+    - Processes UFB products with different speeds
+    - Standardizes DDI and Data product names
+    - Removes dates and extra information
+    
+    Args:
+        desc (str): Raw product description from invoice
+        
+    Returns:
+        str or None: Standardized product description, or None if description should be filtered out
+    """
     if not isinstance(desc, str):
         return None
     
@@ -120,7 +144,26 @@ def clean_product_description(desc: str) -> str:
     return desc.strip() if desc else None
 
 def product_analysis_page():
-    """Main product analysis page"""
+    """Main product analysis page with multiple analysis views.
+    
+    Features:
+    1. Summary Tab:
+       - Product summary with quantity and revenue
+       - Top products visualization
+    
+    2. Customer Analysis Tab:
+       - Products by customer matrix
+       - Top customer charts
+    
+    3. Revenue Analysis Tab:
+       - Category breakdowns
+       - Revenue metrics
+    
+    4. Trends Tab:
+       - Time series analysis
+       - Category trends
+       - Growth metrics
+    """
     st.title("Product Analysis")
     
     # Find all invoices
@@ -129,17 +172,23 @@ def product_analysis_page():
         st.error("No invoice found in bills directory")
         return
         
-    # Create dropdown for invoice selection
+    # Create dropdown for invoice selection with proper sorting
     invoice_options = {}
+    file_dates = []
     for f in invoice_files:
         date_str = f.split('_')[2].split('.')[0]
-        display_name = f"{pd.to_datetime(date_str).strftime('%B %Y')} ({f.split('_')[0]}_{f.split('_')[1]})"
+        file_date = pd.to_datetime(date_str)
+        display_name = f"{file_date.strftime('%B %Y')} ({f.split('_')[0]}_{f.split('_')[1]})"
         invoice_options[display_name] = f
+        file_dates.append((display_name, file_date))
+    
+    # Sort by date in descending order (newest first)
+    sorted_options = [x[0] for x in sorted(file_dates, key=lambda x: x[1], reverse=True)]
 
     selected_invoice = st.selectbox(
         "Select Invoice to Analyze",
-        options=list(invoice_options.keys()),
-        index=0
+        options=sorted_options,
+        index=0  # Default to first (latest) invoice
     )
 
     if selected_invoice:
@@ -160,7 +209,7 @@ def product_analysis_page():
             df = df[df['clean description'].notna() & (df['clean description'] != '')]
             
             # Create tabs for different views
-            tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Customer Analysis", "Revenue Analysis", "Trends"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["Summary", "Customer Analysis", "Revenue Analysis", "Trends", "Changes"])
             
             with tab1:
                 # Product Summary
@@ -205,7 +254,84 @@ def product_analysis_page():
                 significant_products_list = significant_products['Product Type'].tolist()
                 df_filtered = df[df['clean description'].isin(significant_products_list)]
                 
-                # Create pivot table
+                # Add category for revenue analysis
+                df_filtered['category'] = df_filtered['clean description'].apply(lambda x: 
+                    'UFB Services' if 'UFB' in x 
+                    else 'Call Services' if 'Calls' in x 
+                    else 'DDI Services' if 'DDI' in x 
+                    else 'Data Services' if 'Data' in x 
+                    else 'Other Services'
+                )
+                
+                # Create revenue by customer and category
+                customer_revenue = df_filtered.pivot_table(
+                    values='amount',
+                    index='customer name',
+                    columns='category',
+                    aggfunc='sum',
+                    fill_value=0
+                ).reset_index()
+                
+                # Sort by total revenue
+                customer_revenue['total_revenue'] = customer_revenue.iloc[:, 1:].sum(axis=1)
+                customer_revenue = customer_revenue.sort_values('total_revenue', ascending=False)
+                
+                # Create stacked bar chart for top 15 customers
+                st.subheader("Top 15 Customers by Revenue (with Category Breakdown)")
+                top_customers = customer_revenue.head(15)
+                
+                fig_customer_revenue = go.Figure()
+                categories = [col for col in top_customers.columns if col not in ['customer name', 'total_revenue']]
+                
+                for category in categories:
+                    fig_customer_revenue.add_trace(
+                        go.Bar(
+                            name=category,
+                            x=top_customers['customer name'],
+                            y=top_customers[category],
+                            text=top_customers[category].apply(lambda x: f'${x:,.2f}' if x > 0 else ''),
+                            textposition='auto',
+                        )
+                    )
+                
+                fig_customer_revenue.update_layout(
+                    barmode='stack',
+                    title='Revenue by Customer and Category',
+                    xaxis_title='Customer',
+                    yaxis_title='Revenue ($)',
+                    showlegend=True,
+                    legend=dict(
+                        yanchor="top",
+                        y=0.99,
+                        xanchor="left",
+                        x=0.01
+                    ),
+                    hovermode='x unified'
+                )
+                
+                # Rotate x-axis labels for better readability
+                fig_customer_revenue.update_xaxes(tickangle=45)
+                
+                st.plotly_chart(fig_customer_revenue, use_container_width=True)
+                
+                # Show detailed revenue table
+                st.subheader("Customer Revenue Breakdown")
+                st.dataframe(
+                    customer_revenue,
+                    column_config={
+                        'customer name': st.column_config.TextColumn('Customer'),
+                        'UFB Services': st.column_config.NumberColumn('UFB Services', format="$%.2f"),
+                        'Call Services': st.column_config.NumberColumn('Call Services', format="$%.2f"),
+                        'DDI Services': st.column_config.NumberColumn('DDI Services', format="$%.2f"),
+                        'Data Services': st.column_config.NumberColumn('Data Services', format="$%.2f"),
+                        'Other Services': st.column_config.NumberColumn('Other Services', format="$%.2f"),
+                        'total_revenue': st.column_config.NumberColumn('Total Revenue', format="$%.2f")
+                    },
+                    hide_index=True
+                )
+                
+                # Original Products by Customer matrix
+                st.subheader("Products by Customer (Quantity)")
                 pivot_df = pd.pivot_table(
                     df_filtered,
                     values='amount',
@@ -378,9 +504,13 @@ def product_analysis_page():
                 category_df = category_df.groupby(['date', 'category'])['revenue'].sum().reset_index()
                 category_df = category_df.set_index('date').groupby('category').resample('M')['revenue'].sum().reset_index()
                 
-                # Format dates
-                monthly_df['month_label'] = monthly_df['date'].dt.strftime('%b %Y')
-                category_df['month_label'] = category_df['date'].dt.strftime('%b %Y')
+                # Sort chronologically and format dates
+                monthly_df = monthly_df.sort_values('date')
+                category_df = category_df.sort_values('date')
+                
+                # Format dates after sorting
+                monthly_df['month_label'] = pd.to_datetime(monthly_df['date']).dt.strftime('%b %Y')
+                category_df['month_label'] = pd.to_datetime(category_df['date']).dt.strftime('%b %Y')
                 
                 # Plot overall metrics
                 st.subheader("Overall Trends")
@@ -446,10 +576,13 @@ def product_analysis_page():
                 
                 # Enhanced Category Revenue plot
                 st.subheader("Revenue by Category Over Time")
-                category_df_wide = category_df.pivot(index='month_label', columns='category', values='revenue').reset_index()
+                category_df_wide = category_df.pivot(index='date', columns='category', values='revenue').reset_index()
+                category_df_wide['month_label'] = pd.to_datetime(category_df_wide['date']).dt.strftime('%b %Y')
+                category_df_wide = category_df_wide.sort_values('date')  # Sort by actual date
+                
                 fig_categories = go.Figure()
                 
-                for category in category_df_wide.columns[1:]:  # Skip month_label column
+                for category in category_df_wide.columns[2:]:  # Skip date and month_label columns
                     fig_categories.add_trace(
                         go.Scatter(
                             x=category_df_wide['month_label'],
@@ -470,6 +603,11 @@ def product_analysis_page():
                         y=0.99,
                         xanchor="left",
                         x=0.01
+                    ),
+                    xaxis=dict(
+                        type='category',  # Force categorical axis to maintain order
+                        categoryorder='array',
+                        categoryarray=category_df_wide['month_label'].tolist()
                     )
                 )
                 st.plotly_chart(fig_categories, use_container_width=True)
@@ -532,7 +670,279 @@ def product_analysis_page():
                     },
                     hide_index=True
                 )
+            
+            with tab5:
+                st.subheader("Month-over-Month Changes")
                 
+                # Get current and previous month files
+                current_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                previous_date = current_date - pd.DateOffset(months=1)
+                
+                previous_file = None
+                for f in os.listdir("bills"):
+                    if f.startswith("Invoice_") and f.endswith(".csv"):
+                        file_date = pd.to_datetime(f.split('_')[2].split('.')[0])
+                        if file_date.strftime('%Y-%m') == previous_date.strftime('%Y-%m'):
+                            previous_file = os.path.join("bills", f)
+                            break
+                
+                if previous_file:
+                    # Read previous month's data
+                    prev_df = pd.read_csv(previous_file)
+                    prev_df.columns = prev_df.columns.str.lower().str.strip()
+                    prev_df['clean description'] = [clean_product_description(str(desc)) for desc in prev_df['description'].fillna('')]
+                    prev_df = prev_df[prev_df['clean description'].notna() & (prev_df['clean description'] != '')]
+                    
+                    # Add categories
+                    for data in [prev_df, df]:
+                        data['category'] = data['clean description'].apply(lambda x: 
+                            'UFB Services' if 'UFB' in x 
+                            else 'Call Services' if 'Calls' in x 
+                            else 'DDI Services' if 'DDI' in x 
+                            else 'Data Services' if 'Data' in x 
+                            else 'Other Services'
+                        )
+                    
+                    # 1. Overall Changes
+                    st.subheader(f"Overall Changes ({previous_date.strftime('%B %Y')} → {current_date.strftime('%B %Y')})")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    # Customer changes
+                    prev_customers = prev_df['customer name'].nunique()
+                    curr_customers = df['customer name'].nunique()
+                    customer_change = curr_customers - prev_customers
+                    
+                    # Revenue changes
+                    prev_revenue = prev_df['amount'].sum()
+                    curr_revenue = df['amount'].sum()
+                    revenue_change = curr_revenue - prev_revenue
+                    revenue_pct = (revenue_change / prev_revenue) * 100 if prev_revenue != 0 else 0
+                    
+                    # Product changes
+                    prev_products = len(prev_df)
+                    curr_products = len(df)
+                    product_change = curr_products - prev_products
+                    
+                    with col1:
+                        st.metric(
+                            "Customers",
+                            f"{curr_customers}",
+                            f"{customer_change:+d}",
+                            delta_color="normal"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            "Total Revenue",
+                            f"${curr_revenue:,.2f}",
+                            f"${revenue_change:+,.2f} ({revenue_pct:+.1f}%)",
+                            delta_color="normal"
+                        )
+                    
+                    with col3:
+                        st.metric(
+                            "Total Products",
+                            f"{curr_products}",
+                            f"{product_change:+d}",
+                            delta_color="normal"
+                        )
+                    
+                    # 2. Category Changes
+                    st.subheader("Changes by Category")
+                    
+                    # Calculate category metrics
+                    prev_cat = prev_df.groupby('category')['amount'].sum().reset_index()
+                    curr_cat = df.groupby('category')['amount'].sum().reset_index()
+                    
+                    # Merge and calculate changes
+                    cat_changes = pd.merge(
+                        prev_cat, 
+                        curr_cat, 
+                        on='category', 
+                        suffixes=('_prev', '_curr')
+                    )
+                    cat_changes['change'] = cat_changes['amount_curr'] - cat_changes['amount_prev']
+                    cat_changes['pct_change'] = (cat_changes['change'] / cat_changes['amount_prev']) * 100
+                    
+                    # Plot category changes
+                    fig_cat_changes = go.Figure()
+                    
+                    # Add bars for previous month
+                    fig_cat_changes.add_trace(
+                        go.Bar(
+                            name=previous_date.strftime('%B %Y'),
+                            x=cat_changes['category'],
+                            y=cat_changes['amount_prev'],
+                            text=cat_changes['amount_prev'].apply(lambda x: f'${x:,.2f}'),
+                            textposition='auto',
+                        )
+                    )
+                    
+                    # Add bars for current month
+                    fig_cat_changes.add_trace(
+                        go.Bar(
+                            name=current_date.strftime('%B %Y'),
+                            x=cat_changes['category'],
+                            y=cat_changes['amount_curr'],
+                            text=cat_changes['amount_curr'].apply(lambda x: f'${x:,.2f}'),
+                            textposition='auto',
+                        )
+                    )
+                    
+                    fig_cat_changes.update_layout(
+                        barmode='group',
+                        title='Revenue by Category - Month over Month Comparison',
+                        xaxis_title='Category',
+                        yaxis_title='Revenue ($)',
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig_cat_changes, use_container_width=True)
+                    
+                    # Show category changes table
+                    st.dataframe(
+                        cat_changes,
+                        column_config={
+                            'category': 'Category',
+                            'amount_prev': st.column_config.NumberColumn(f'Revenue {previous_date.strftime("%B %Y")}', format="$%.2f"),
+                            'amount_curr': st.column_config.NumberColumn(f'Revenue {current_date.strftime("%B %Y")}', format="$%.2f"),
+                            'change': st.column_config.NumberColumn('Change', format="$%.2f"),
+                            'pct_change': st.column_config.NumberColumn('% Change', format="%.1f%%")
+                        },
+                        hide_index=True
+                    )
+                    
+                    # 3. Customer Changes
+                    st.subheader("Customer Revenue Changes")
+                    
+                    # Calculate customer revenue for both months
+                    prev_cust = prev_df.groupby('customer name')['amount'].sum().reset_index()
+                    curr_cust = df.groupby('customer name')['amount'].sum().reset_index()
+                    
+                    # Merge and calculate changes
+                    cust_changes = pd.merge(
+                        prev_cust,
+                        curr_cust,
+                        on='customer name',
+                        how='outer',
+                        suffixes=('_prev', '_curr')
+                    ).fillna(0)
+                    
+                    cust_changes['change'] = cust_changes['amount_curr'] - cust_changes['amount_prev']
+                    cust_changes['pct_change'] = (cust_changes['change'] / cust_changes['amount_prev']) * 100
+                    cust_changes = cust_changes.replace([np.inf, -np.inf], np.nan)
+                    
+                    # Sort by absolute change
+                    cust_changes = cust_changes.sort_values('change', key=abs, ascending=False)
+                    
+                    # Show top changes with drill-downs
+                    st.subheader("Top 10 Customer Changes (Click to expand details)")
+                    
+                    for _, row in cust_changes.head(10).iterrows():
+                        change_color = "🔴" if row['change'] < 0 else "🟢"
+                        expander_title = f"{change_color} {row['customer name']}: {row['change']:+,.2f} ({row['pct_change']:+.1f}%)"
+                        
+                        with st.expander(expander_title):
+                            # Get detailed data for this customer
+                            prev_detail = prev_df[prev_df['customer name'] == row['customer name']]
+                            curr_detail = df[df['customer name'] == row['customer name']]
+                            
+                            # Product breakdown comparison
+                            st.subheader("Product Changes")
+                            
+                            # Compare products side by side
+                            product_comparison = pd.merge(
+                                prev_detail.groupby(['clean description', 'category'])['amount'].sum().reset_index(),
+                                curr_detail.groupby(['clean description', 'category'])['amount'].sum().reset_index(),
+                                on=['clean description', 'category'],
+                                how='outer',
+                                suffixes=('_prev', '_curr')
+                            ).fillna(0)
+                            
+                            product_comparison['change'] = product_comparison['amount_curr'] - product_comparison['amount_prev']
+                            product_comparison['pct_change'] = (product_comparison['change'] / product_comparison['amount_prev'] * 100).replace([np.inf, -np.inf], np.nan)
+                            
+                            # Sort by absolute change
+                            product_comparison = product_comparison.sort_values('change', key=abs, ascending=False)
+                            
+                            # Show product comparison table
+                            st.dataframe(
+                                product_comparison,
+                                column_config={
+                                    'clean description': 'Product',
+                                    'category': 'Category',
+                                    'amount_prev': st.column_config.NumberColumn(f'Revenue {previous_date.strftime("%B %Y")}', format="$%.2f"),
+                                    'amount_curr': st.column_config.NumberColumn(f'Revenue {current_date.strftime("%B %Y")}', format="$%.2f"),
+                                    'change': st.column_config.NumberColumn('Change', format="$%.2f"),
+                                    'pct_change': st.column_config.NumberColumn('% Change', format="%.1f%%")
+                                },
+                                hide_index=True
+                            )
+                            
+                            # Show category summary for this customer
+                            st.subheader("Category Summary")
+                            category_comparison = pd.merge(
+                                prev_detail.groupby('category')['amount'].sum().reset_index(),
+                                curr_detail.groupby('category')['amount'].sum().reset_index(),
+                                on='category',
+                                how='outer',
+                                suffixes=('_prev', '_curr')
+                            ).fillna(0)
+                            
+                            category_comparison['change'] = category_comparison['amount_curr'] - category_comparison['amount_prev']
+                            category_comparison['pct_change'] = (category_comparison['change'] / category_comparison['amount_prev'] * 100).replace([np.inf, -np.inf], np.nan)
+                            
+                            # Create category comparison chart
+                            fig_cat = go.Figure()
+                            
+                            fig_cat.add_trace(
+                                go.Bar(
+                                    name=previous_date.strftime('%B %Y'),
+                                    x=category_comparison['category'],
+                                    y=category_comparison['amount_prev'],
+                                    text=category_comparison['amount_prev'].apply(lambda x: f'${x:,.2f}'),
+                                    textposition='auto',
+                                )
+                            )
+                            
+                            fig_cat.add_trace(
+                                go.Bar(
+                                    name=current_date.strftime('%B %Y'),
+                                    x=category_comparison['category'],
+                                    y=category_comparison['amount_curr'],
+                                    text=category_comparison['amount_curr'].apply(lambda x: f'${x:,.2f}'),
+                                    textposition='auto',
+                                )
+                            )
+                            
+                            fig_cat.update_layout(
+                                barmode='group',
+                                title=f'Category Revenue Comparison for {row["customer name"]}',
+                                xaxis_title='Category',
+                                yaxis_title='Revenue ($)',
+                                hovermode='x unified'
+                            )
+                            
+                            st.plotly_chart(fig_cat, use_container_width=True)
+                    
+                    # Original summary table
+                    st.subheader("Summary Table")
+                    st.dataframe(
+                        cust_changes.head(10),
+                        column_config={
+                            'customer name': 'Customer',
+                            'amount_prev': st.column_config.NumberColumn(f'Revenue {previous_date.strftime("%B %Y")}', format="$%.2f"),
+                            'amount_curr': st.column_config.NumberColumn(f'Revenue {current_date.strftime("%B %Y")}', format="$%.2f"),
+                            'change': st.column_config.NumberColumn('Change', format="$%.2f"),
+                            'pct_change': st.column_config.NumberColumn('% Change', format="%.1f%%")
+                        },
+                        hide_index=True
+                    )
+                
+                else:
+                    st.warning(f"No data available for previous month ({previous_date.strftime('%B %Y')})")
+            
         except Exception as e:
             st.error(f"Error analyzing invoice: {str(e)}")
             st.code(traceback.format_exc()) 

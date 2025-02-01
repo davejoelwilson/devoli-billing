@@ -332,6 +332,18 @@ def process_page():
                                                     if not line_items:
                                                         raise ValueError("Line items not found for The Service Company")
                                                     
+                                                    # Calculate total amount
+                                                    total_amount = sum(item.get('UnitAmount', 0) for item in line_items)
+                                                    
+                                                    # Skip if total is $0
+                                                    if total_amount == 0:
+                                                        results.append({
+                                                            'Customer': clean_customer,
+                                                            'Status': 'Skipped',
+                                                            'Details': 'Invoice total is $0 - skipped'
+                                                        })
+                                                        continue
+                                                    
                                                     # Create invoice with line items
                                                     result = devoli_processor.create_xero_invoice(
                                                         clean_customer,
@@ -355,6 +367,15 @@ def process_page():
                                                         st.warning("Description truncated for Xero compatibility")
                                                     totals = calculate_customer_totals(customer_data)
                                                     pricing = round(totals['total_charges'], 2)
+                                                    
+                                                    # Skip if total is $0
+                                                    if pricing == 0:
+                                                        results.append({
+                                                            'Customer': clean_customer,
+                                                            'Status': 'Skipped',
+                                                            'Details': 'Invoice total is $0 - skipped'
+                                                        })
+                                                        continue
                                                     
                                                     result = devoli_processor.create_xero_invoice(
                                                         clean_customer,

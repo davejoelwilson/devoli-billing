@@ -306,6 +306,16 @@ def process_page():
                                 "Process",
                                 help="Select companies to process",
                                 default=False
+                            ),
+                            "Xero Name": st.column_config.TextColumn(
+                                "Company",
+                                help="Company name in Xero"
+                            ),
+                            "Devoli Names": st.column_config.Column(
+                                "Devoli Names",
+                                help="Internal reference only",
+                                required=True,
+                                visible=False
                             )
                         },
                         disabled=["Devoli Names", "Xero Name", "Description", "Minutes", "DDI Charges", "Calling Charges", "Total", "Status"],

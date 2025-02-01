@@ -799,7 +799,7 @@ def main():
     init_session_state()
     
     # Updated navigation
-    page = st.sidebar.radio("Select Page", ["Customer Mapping", "Process Invoices", "Product Analysis"])
+    page = st.sidebar.radio("Select Page", ["Process Invoices", "Product Analysis", "Customer Mapping"])
     
     if page == "Customer Mapping":
         mapping_page()

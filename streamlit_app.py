@@ -658,14 +658,63 @@ def main():
         }
     )
     
-    # Set light theme as default
+    # Set complete light theme
     st.markdown("""
         <style>
-        :root {
-            --primary-color: #ff4b4b;
-        }
+        /* Main app */
         .stApp {
             background-color: white;
+            color: black;
+        }
+        
+        /* Sidebar */
+        section[data-testid="stSidebar"] {
+            background-color: #f8f9fa;
+            color: black;
+        }
+        
+        /* Buttons */
+        .stButton button {
+            background-color: #ff4b4b;
+            color: white;
+            border: none;
+        }
+        
+        /* Dataframe */
+        .stDataFrame {
+            background-color: white;
+        }
+        
+        /* Text inputs */
+        .stTextInput input {
+            background-color: white;
+            color: black;
+        }
+        
+        /* Dropdowns */
+        .stSelectbox select {
+            background-color: white;
+            color: black;
+        }
+        
+        /* Progress bar */
+        .stProgress > div > div {
+            background-color: #ff4b4b;
+        }
+        
+        /* Info boxes */
+        .stAlert {
+            background-color: white;
+            color: black;
+        }
+        
+        /* Radio buttons */
+        .stRadio label {
+            color: black;
+        }
+        
+        /* Headers */
+        h1, h2, h3, h4, h5, h6 {
             color: black;
         }
         </style>

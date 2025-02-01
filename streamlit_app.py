@@ -289,13 +289,17 @@ def process_page():
                     col1, col2 = st.columns([1, 9])  # Create two columns for layout
                     select_all = col1.button("Select All")
                     
-                    if select_all:
-                        # Update all checkboxes to True
-                        process_df['Select'] = True
+                    # Store the DataFrame in session state if not already there
+                    if 'process_df' not in st.session_state:
+                        st.session_state.process_df = process_df.copy()
                     
-                    # Display the dataframe with checkboxes
+                    # Update all checkboxes when Select All is clicked
+                    if select_all:
+                        st.session_state.process_df['Select'] = True
+                    
+                    # Display the dataframe with checkboxes and get edited version
                     edited_df = st.data_editor(
-                        process_df,
+                        st.session_state.process_df,
                         hide_index=True,
                         column_config={
                             "Select": st.column_config.CheckboxColumn(
@@ -304,10 +308,14 @@ def process_page():
                                 default=False
                             )
                         },
-                        disabled=["Devoli Names", "Xero Name", "Description", "Minutes", "DDI Charges", "Calling Charges", "Total", "Status"]
+                        disabled=["Devoli Names", "Xero Name", "Description", "Minutes", "DDI Charges", "Calling Charges", "Total", "Status"],
+                        key="process_editor"
                     )
                     
-                    # Get selected customers
+                    # Update session state with edited values
+                    st.session_state.process_df = edited_df.copy()
+                    
+                    # Get selected customers from the edited DataFrame
                     selected_customers = edited_df[edited_df['Select']]['Devoli Names'].tolist()
                     
                     # Process button

@@ -129,6 +129,11 @@ def process_page():
             
             df = pd.read_csv(invoice_file)
             
+            # Normalize column names to be case-insensitive
+            df.columns = df.columns.str.strip()  # Remove any whitespace
+            column_mapping = {col: col.title() for col in df.columns}  # Convert to title case
+            df = df.rename(columns=column_mapping)
+            
             # Clean customer names by stripping whitespace
             df['Customer Name'] = df['Customer Name'].str.strip()
             

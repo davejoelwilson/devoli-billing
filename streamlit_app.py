@@ -226,21 +226,28 @@ def process_page():
                                         "TaxType": "OUTPUT2"
                                     })
                             
-                            # Add to process_data for display in table
-                            process_data.append({
-                                'Select': True,
-                                'Devoli Names': ', '.join(customers),
-                                'Xero Name': xero_name,
-                                'Description': '\n'.join(invoice_desc),
-                                'Minutes': 0,  # Not used for Service Company
-                                'DDI Charges': 0,  # Base fee included in calling charges
-                                'Calling Charges': service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values()),
-                                'Total': service_results['total'],
-                                'Status': 'Ready'
-                            })
+                            # Calculate total before adding to process_data
+                            total_amount = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
                             
-                            # Store line items for later use
-                            st.session_state[f"line_items_{xero_name}"] = line_items
+                            # Only add to process_data if total is not $0
+                            if total_amount > 0:
+                                # Add to process_data for display in table
+                                process_data.append({
+                                    'Select': True,
+                                    'Devoli Names': ', '.join(customers),
+                                    'Xero Name': xero_name,
+                                    'Description': '\n'.join(invoice_desc),
+                                    'Minutes': 0,  # Not used for Service Company
+                                    'DDI Charges': 0,  # Base fee included in calling charges
+                                    'Calling Charges': total_amount,
+                                    'Total': total_amount,
+                                    'Status': 'Ready'
+                                })
+                                
+                                # Store line items for later use
+                                st.session_state[f"line_items_{xero_name}"] = line_items
+                            else:
+                                st.info(f"ℹ️ Skipping {xero_name} - $0 invoice")
                         else:
                             st.warning(f"No data found for The Service Company")
                     else:
@@ -254,17 +261,21 @@ def process_page():
                             invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
                             st.warning("Description truncated for Xero compatibility")
                         
-                        process_data.append({
-                            'Select': True,
-                            'Devoli Names': ', '.join(customers),
-                            'Xero Name': xero_name,
-                            'Description': invoice_desc,
-                            'Minutes': totals['minutes'],
-                            'DDI Charges': totals['ddi_charges'],
-                            'Calling Charges': totals['calling_charges'],
-                            'Total': totals['total_charges'],
-                            'Status': 'Ready'
-                        })
+                        # Only add to process_data if total is not $0
+                        if totals['total_charges'] > 0:
+                            process_data.append({
+                                'Select': True,
+                                'Devoli Names': ', '.join(customers),
+                                'Xero Name': xero_name,
+                                'Description': invoice_desc,
+                                'Minutes': totals['minutes'],
+                                'DDI Charges': totals['ddi_charges'],
+                                'Calling Charges': totals['calling_charges'],
+                                'Total': totals['total_charges'],
+                                'Status': 'Ready'
+                            })
+                        else:
+                            st.info(f"ℹ️ Skipping {xero_name} - $0 invoice")
                 
                 if process_data:
                     # Set all Select values to False by default

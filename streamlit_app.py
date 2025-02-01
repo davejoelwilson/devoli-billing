@@ -261,8 +261,8 @@ def process_page():
                             invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
                             st.warning("Description truncated for Xero compatibility")
                         
-                        # Only add to process_data if total is not $0
-                        if totals['total_charges'] > 0:
+                        # Only add to process_data if calling charges are not $0
+                        if totals['calling_charges'] > 0:
                             process_data.append({
                                 'Select': True,
                                 'Devoli Names': ', '.join(customers),
@@ -275,7 +275,7 @@ def process_page():
                                 'Status': 'Ready'
                             })
                         else:
-                            st.info(f"ℹ️ Skipping {xero_name} - $0 invoice")
+                            st.info(f"ℹ️ Skipping {xero_name} - $0 calling charges")
                 
                 if process_data:
                     # Set all Select values to False by default
@@ -406,21 +406,21 @@ def process_page():
                                                         invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
                                                         st.warning("Description truncated for Xero compatibility")
                                                     totals = calculate_customer_totals(customer_data)
-                                                    pricing = round(totals['total_charges'], 2)
+                                                    pricing = round(totals['calling_charges'], 2)  # Use calling charges instead of total
                                                     
-                                                    # Skip if total is $0
+                                                    # Skip if calling charges are $0
                                                     if pricing == 0:
                                                         with log_container:
-                                                            st.warning(f"⚠️ Skipping {clean_customer} - $0 invoice")
+                                                            st.warning(f"⚠️ Skipping {clean_customer} - $0 calling charges")
                                                         results.append({
                                                             'Customer': clean_customer,
                                                             'Status': 'Skipped',
-                                                            'Details': 'Invoice total is $0 - skipped'
+                                                            'Details': 'Calling charges are $0 - skipped'
                                                         })
                                                         continue
                                                     
                                                     with log_container:
-                                                        st.text(f"💰 Total amount: ${pricing:.2f}")
+                                                        st.text(f"💰 Calling charges: ${pricing:.2f}")
                                                     
                                                     result = devoli_processor.create_xero_invoice(
                                                         clean_customer,
@@ -433,7 +433,7 @@ def process_page():
                                                             'line_amount_types': 'Exclusive',
                                                             'reference': reference,
                                                             'description': invoice_desc,
-                                                            'line_amount': pricing
+                                                            'line_amount': pricing  # This will now be just the calling charges
                                                         }
                                                     )
                                                 

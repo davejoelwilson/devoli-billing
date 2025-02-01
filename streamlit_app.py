@@ -303,19 +303,36 @@ def process_page():
                     if selected_customers:
                         if st.button(f"Process {len(selected_customers)} Selected Companies"):
                             with st.spinner("Processing..."):
+                                # Create containers for logging
+                                log_container = st.container()
+                                results_container = st.container()
+                                
+                                # Initialize progress bar
+                                total_customers = sum(len(customer_list.split(', ')) for customer_list in selected_customers)
+                                progress_bar = st.progress(0)
+                                progress_text = st.empty()
+                                
                                 results = []
+                                processed_count = 0
+                                
                                 for customer_list in selected_customers:
                                     for customer in customer_list.split(', '):
                                         try:
                                             clean_customer = customer.strip()
                                             xero_name = mappings[clean_customer]
                                             
+                                            # Update progress
+                                            processed_count += 1
+                                            progress = processed_count / total_customers
+                                            progress_bar.progress(progress)
+                                            progress_text.text(f"Processing {processed_count} of {total_customers}: {clean_customer}")
+                                            
                                             # Get the data for this customer
                                             customer_data = df[df['Customer Name'] == clean_customer]
                                             
-                                            # Debug Xero invoice creation
-                                            st.write(f"Creating invoice for {clean_customer} -> {xero_name}")
-                                            st.write(f"Data rows: {len(customer_data)}")
+                                            # Show processing status in a cleaner way
+                                            with log_container:
+                                                st.info(f"📝 Creating invoice for {clean_customer} → {xero_name} ({len(customer_data)} records)")
                                             
                                             # Create invoice with more detailed error handling
                                             try:
@@ -337,6 +354,8 @@ def process_page():
                                                     
                                                     # Skip if total is $0
                                                     if total_amount == 0:
+                                                        with log_container:
+                                                            st.warning(f"⚠️ Skipping {clean_customer} - $0 invoice")
                                                         results.append({
                                                             'Customer': clean_customer,
                                                             'Status': 'Skipped',
@@ -344,7 +363,9 @@ def process_page():
                                                         })
                                                         continue
                                                     
-                                                    # Create invoice with line items
+                                                    with log_container:
+                                                        st.text(f"💰 Total amount: ${total_amount:.2f}")
+                                                    
                                                     result = devoli_processor.create_xero_invoice(
                                                         clean_customer,
                                                         service_df,
@@ -370,12 +391,17 @@ def process_page():
                                                     
                                                     # Skip if total is $0
                                                     if pricing == 0:
+                                                        with log_container:
+                                                            st.warning(f"⚠️ Skipping {clean_customer} - $0 invoice")
                                                         results.append({
                                                             'Customer': clean_customer,
                                                             'Status': 'Skipped',
                                                             'Details': 'Invoice total is $0 - skipped'
                                                         })
                                                         continue
+                                                    
+                                                    with log_container:
+                                                        st.text(f"💰 Total amount: ${pricing:.2f}")
                                                     
                                                     result = devoli_processor.create_xero_invoice(
                                                         clean_customer,
@@ -394,10 +420,19 @@ def process_page():
                                                 
                                                 status = 'Success' if result else 'Failed'
                                                 details = str(result) if result else 'Invoice creation returned None'
+                                                
+                                                # Show success/failure in a cleaner way
+                                                with log_container:
+                                                    if status == 'Success':
+                                                        st.success(f"✅ Successfully created invoice for {clean_customer}")
+                                                    else:
+                                                        st.error(f"❌ Failed to create invoice for {clean_customer}")
+                                                
                                             except Exception as xe:
                                                 status = 'Failed'
                                                 details = f"Xero Error: {str(xe)}"
-                                                st.error(f"Xero error for {clean_customer}: {str(xe)}")
+                                                with log_container:
+                                                    st.error(f"❌ Error creating invoice for {clean_customer}: {str(xe)}")
                                             
                                             results.append({
                                                 'Customer': clean_customer,
@@ -406,14 +441,48 @@ def process_page():
                                             })
                                             
                                         except Exception as e:
+                                            with log_container:
+                                                st.error(f"❌ System error processing {clean_customer}: {str(e)}")
                                             results.append({
                                                 'Customer': clean_customer,
                                                 'Status': 'Error',
                                                 'Details': f"System Error: {str(e)}"
                                             })
                                 
-                                # Show results
-                                st.dataframe(pd.DataFrame(results))
+                                # Clear progress indicators
+                                progress_bar.empty()
+                                progress_text.empty()
+                                
+                                # Show final results in a clean table
+                                with results_container:
+                                    st.subheader("📊 Processing Summary")
+                                    results_df = pd.DataFrame(results)
+                                    
+                                    # Count statuses
+                                    status_counts = results_df['Status'].value_counts()
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    
+                                    with col1:
+                                        st.metric("Total", len(results))
+                                    with col2:
+                                        st.metric("Success", status_counts.get('Success', 0))
+                                    with col3:
+                                        st.metric("Skipped", status_counts.get('Skipped', 0))
+                                    with col4:
+                                        st.metric("Failed", status_counts.get('Failed', 0) + status_counts.get('Error', 0))
+                                    
+                                    st.dataframe(
+                                        results_df,
+                                        column_config={
+                                            "Customer": "Company",
+                                            "Status": st.column_config.TextColumn(
+                                                "Status",
+                                                help="Processing status for each company"
+                                            ),
+                                            "Details": "Details"
+                                        },
+                                        hide_index=True
+                                    )
                     else:
                         st.warning("No companies ready to process. Please check mappings.")
                 else:

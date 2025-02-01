@@ -7,6 +7,7 @@ from customer_mapping import mapping_page
 import re
 from service_company import ServiceCompanyBilling
 import time
+from product_analysis import product_analysis_page
 
 def init_session_state():
     """Initialize session state variables"""
@@ -113,10 +114,17 @@ def process_page():
             options=list(invoice_options.keys()),
             index=0,  # Default to newest
             format_func=lambda x: x,  # Show full display name
-            help="Select which invoice file to process"
+            help="Select which invoice file to process",
+            key="invoice_selector"  # Add a key for the selectbox
         )
 
         if selected_invoice:
+            # Clear process_df when invoice changes
+            if 'last_invoice' not in st.session_state or st.session_state.last_invoice != selected_invoice:
+                if 'process_df' in st.session_state:
+                    del st.session_state.process_df
+                st.session_state.last_invoice = selected_invoice
+            
             invoice_file = os.path.join("bills", invoice_options[selected_invoice])
             
             # Create a placeholder for the temporary message
@@ -227,7 +235,7 @@ def process_page():
                                     })
                             
                             # Calculate total before adding to process_data
-                            total_amount = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
+                            total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
                             
                             # Only add to process_data if total is not $0
                             if total_amount > 0:
@@ -246,8 +254,7 @@ def process_page():
                                 
                                 # Store line items for later use
                                 st.session_state[f"line_items_{xero_name}"] = line_items
-                            else:
-                                st.info(f"ℹ️ Skipping {xero_name} - $0 invoice")
+                            
                         else:
                             st.warning(f"No data found for The Service Company")
                     else:
@@ -274,8 +281,6 @@ def process_page():
                                 'Total': totals['total_charges'],
                                 'Status': 'Ready'
                             })
-                        else:
-                            st.info(f"ℹ️ Skipping {xero_name} - $0 calling charges")
                 
                 if process_data:
                     # Set all Select values to False by default
@@ -284,6 +289,53 @@ def process_page():
                     
                     # Create DataFrame with selection column
                     process_df = pd.DataFrame(process_data)
+                    
+                    # Calculate current month total from raw file
+                    current_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                    current_total = df['Amount'].sum()
+                    
+                    # Calculate previous month total
+                    previous_date = current_date - pd.DateOffset(months=1)
+                    previous_total = 0
+                    
+                    # Find previous month's file
+                    for f in os.listdir("bills"):
+                        if f.startswith("Invoice_") and f.endswith(".csv"):
+                            file_date = pd.to_datetime(f.split('_')[2].split('.')[0])
+                            if file_date.strftime('%Y-%m') == previous_date.strftime('%Y-%m'):
+                                prev_df = pd.read_csv(os.path.join("bills", f))
+                                prev_df.columns = prev_df.columns.str.strip()
+                                prev_df = prev_df.rename(columns={col: col.title() for col in prev_df.columns})
+                                previous_total = prev_df['Amount'].sum()
+                                break
+                    
+                    # Show month totals
+                    st.subheader("Monthly Totals")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            f"Current Month ({current_date.strftime('%B %Y')})",
+                            f"${current_total:,.2f}"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            f"Previous Month ({previous_date.strftime('%B %Y')})",
+                            f"${previous_total:,.2f}"
+                        )
+                    
+                    with col3:
+                        change = current_total - previous_total
+                        pct_change = ((current_total - previous_total) / previous_total * 100) if previous_total != 0 else 0
+                        st.metric(
+                            "Month over Month Change",
+                            f"${change:+,.2f}",
+                            f"{pct_change:+.1f}%",
+                            delta_color="normal"
+                        )
+                    
+                    st.divider()
                     
                     # Add Select All button and get its state
                     col1, col2 = st.columns([1, 9])  # Create two columns for layout
@@ -299,7 +351,7 @@ def process_page():
                     
                     # Display the dataframe with checkboxes and get edited version
                     edited_df = st.data_editor(
-                        st.session_state.process_df,
+                        st.session_state.process_df[['Select', 'Xero Name', 'Description', 'DDI Charges', 'Calling Charges', 'Total', 'Status']],
                         hide_index=True,
                         column_config={
                             "Select": st.column_config.CheckboxColumn(
@@ -310,23 +362,28 @@ def process_page():
                             "Xero Name": st.column_config.TextColumn(
                                 "Company",
                                 help="Company name in Xero"
-                            ),
-                            "Devoli Names": st.column_config.Column(
-                                "Devoli Names",
-                                help="Internal reference only",
-                                required=True,
-                                visible=False
                             )
                         },
-                        disabled=["Devoli Names", "Xero Name", "Description", "Minutes", "DDI Charges", "Calling Charges", "Total", "Status"],
+                        disabled=["Xero Name", "Description", "DDI Charges", "Calling Charges", "Total", "Status"],
                         key="process_editor"
                     )
+                    
+                    # Add back the Devoli Names and Minutes columns to the edited DataFrame
+                    edited_df = edited_df.join(st.session_state.process_df[['Devoli Names', 'Minutes']])
                     
                     # Update session state with edited values
                     st.session_state.process_df = edited_df.copy()
                     
                     # Get selected customers from the edited DataFrame
                     selected_customers = edited_df[edited_df['Select']]['Devoli Names'].tolist()
+                    
+                    # Show skipped customers
+                    st.divider()
+                    st.subheader("Skipped Customers")
+                    for xero_name, customers in xero_groups.items():
+                        # Check if this customer was skipped
+                        if not any(xero_name == row['Xero Name'] for row in process_data):
+                            st.info(f"ℹ️ Skipping {xero_name} - $0 calling charges")
                     
                     # Process button
                     if selected_customers:
@@ -741,13 +798,15 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Navigation
-    page = st.sidebar.radio("Select Page", ["Customer Mapping", "Process Invoices"])
+    # Updated navigation
+    page = st.sidebar.radio("Select Page", ["Customer Mapping", "Process Invoices", "Product Analysis"])
     
     if page == "Customer Mapping":
         mapping_page()
-    else:
+    elif page == "Process Invoices":
         process_page()
+    else:
+        product_analysis_page()
 
 if __name__ == "__main__":
     main()

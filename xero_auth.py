@@ -11,7 +11,6 @@ from typing import Optional, Dict, List
 import sys
 import streamlit as st
 from dotenv import load_dotenv
-from tests.xero_auth import debug_auth_setup, start_auth_flow
 
 class XeroTokenManager:
     def __init__(self, token_file: str = 'xero_tokens.json'):

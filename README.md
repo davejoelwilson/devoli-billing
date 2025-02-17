@@ -79,6 +79,19 @@ streamlit run streamlit_app.py
   - Duration
   - Type (Local, Mobile, National, Australia)
 
+## Special Customer Handling
+
+### SPARK Customers
+- Any customer with "SPARK" in their name automatically receives a 6% discount on calling charges
+- The discount is shown as a separate line item in Xero invoices
+- The discount line uses account code 45900 (SPARK Sales account)
+- GST is calculated on the net amount after the discount is applied
+- The discount appears in the processing table as:
+  - Original call charges (ex GST)
+  - Discount amount (6%)
+  - Net amount after discount
+  - Call charges including GST (calculated on net amount)
+
 ## Troubleshooting
 
 1. Xero Authentication:

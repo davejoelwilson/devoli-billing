@@ -3,4 +3,7 @@ pandas
 python-dotenv
 fuzzywuzzy
 python-Levenshtein  # Optional, but makes fuzzywuzzy faster
-requests 
+requests
+plotly
+numpy
+watchdog  # For better Streamlit performance 

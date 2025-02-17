@@ -361,7 +361,11 @@ def process_page():
                     # Display the dataframe with checkboxes and get edited version
                     edited_df = st.data_editor(
                         st.session_state.process_df[['Select', 'Xero Name', 'Description', 'Calling Charges']].assign(
-                            **{'Call Charges inc GST': lambda x: x['Calling Charges'] * 1.15}
+                            **{
+                                'Discount': lambda x: x.apply(lambda row: row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0, axis=1),
+                                'Net Amount': lambda x: x.apply(lambda row: row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0), axis=1),
+                                'Call Charges inc GST': lambda x: x.apply(lambda row: (row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0)) * 1.15, axis=1)
+                            }
                         ),
                         hide_index=True,
                         column_config={
@@ -379,13 +383,23 @@ def process_page():
                                 help="Call charges excluding GST",
                                 format="$%.2f"
                             ),
+                            "Discount": st.column_config.NumberColumn(
+                                "Discount (6%)",
+                                help="6% discount for SPARK customers",
+                                format="$%.2f"
+                            ),
+                            "Net Amount": st.column_config.NumberColumn(
+                                "Net Amount (ex GST)",
+                                help="Amount after discount, before GST",
+                                format="$%.2f"
+                            ),
                             "Call Charges inc GST": st.column_config.NumberColumn(
                                 "Call Charges (inc GST)",
-                                help="Call charges including GST (15%)",
+                                help="Call charges including GST after discount",
                                 format="$%.2f"
                             )
                         },
-                        disabled=["Xero Name", "Description", "Calling Charges", "Call Charges inc GST"],
+                        disabled=["Xero Name", "Description", "Calling Charges", "Discount", "Net Amount", "Call Charges inc GST"],
                         key="process_editor"
                     )
                     
@@ -534,6 +548,20 @@ def process_page():
                                                         )
                                                         status = 'Success'
                                                         details = f"Calling charges: ${totals['calling_charges']:,.2f}"
+                                                        
+                                                        # Add discount line for SPARK customers
+                                                        if 'SPARK' in clean_customer.upper():
+                                                            discount_amount = totals['calling_charges'] * 0.06
+                                                            devoli_processor.add_line_item(
+                                                                xero_invoice,
+                                                                {
+                                                                    "Description": "Spark Discount Taken",
+                                                                    "Quantity": totals['calling_charges'],
+                                                                    "UnitAmount": -0.06,  # Negative to represent discount
+                                                                    "AccountCode": "45900",  # SPARK Sales account
+                                                                    "TaxType": "OUTPUT2"  # 15% GST
+                                                                }
+                                                            )
                                                         
                                                         # Log the invoice number for debugging
                                                         with log_container:

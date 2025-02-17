@@ -895,6 +895,49 @@ class DevoliBilling:
         
         # Rest of the processing...
 
+    def add_line_item(self, invoice, line_item):
+        """Add a line item to an existing Xero invoice.
+        
+        Args:
+            invoice (dict): The Xero invoice response
+            line_item (dict): The line item to add with fields:
+                - Description
+                - Quantity
+                - UnitAmount
+                - AccountCode
+                - TaxType
+        """
+        if not invoice or 'Invoices' not in invoice or not invoice['Invoices']:
+            raise ValueError("Invalid invoice object")
+            
+        invoice_id = invoice['Invoices'][0]['InvoiceID']
+        
+        # Get the current invoice to update
+        url = f"{self.XERO_API_URL}/Invoices/{invoice_id}"
+        headers = self.token_manager.get_auth_headers()
+        
+        try:
+            # Get current invoice
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            current_invoice = response.json()
+            
+            # Add new line item
+            if 'LineItems' not in current_invoice['Invoices'][0]:
+                current_invoice['Invoices'][0]['LineItems'] = []
+            
+            current_invoice['Invoices'][0]['LineItems'].append(line_item)
+            
+            # Update invoice
+            response = requests.post(url, headers=headers, json=current_invoice)
+            response.raise_for_status()
+            
+            return response.json()
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error adding line item to invoice: {str(e)}")
+            raise
+
 def main():
     st.set_page_config(page_title="Devoli Billing", layout="wide")
     

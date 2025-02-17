@@ -112,6 +112,41 @@ rates = {
    }
    ```
 
+## Customer Discounts
+
+### SPARK Customer Discount (6%)
+The application automatically applies a 6% discount to all SPARK customers' calling charges.
+
+#### Implementation Details
+1. **Detection**: 
+   - Customers are identified by checking for "SPARK" in their Xero name (case-insensitive)
+   - This check is performed in the data editor and invoice creation process
+
+2. **Display**:
+   ```python
+   'Discount': lambda x: x.apply(lambda row: row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0, axis=1)
+   'Net Amount': lambda x: x.apply(lambda row: row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0), axis=1)
+   'Call Charges inc GST': lambda x: x.apply(lambda row: (row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0)) * 1.15, axis=1)
+   ```
+
+3. **Xero Integration**:
+   - Discount is added as a separate line item in Xero
+   - Uses account code 45900 (SPARK Sales account)
+   - Description: "Spark Discount Taken"
+   - Amount is calculated as -6% of the total calling charges
+   - GST (15%) is applied to the net amount after discount
+
+4. **Line Item Structure**:
+   ```python
+   {
+       "Description": "Spark Discount Taken",
+       "Quantity": total_calling_charges,
+       "UnitAmount": -0.06,  # Negative to represent discount
+       "AccountCode": "45900",
+       "TaxType": "OUTPUT2"  # 15% GST
+   }
+   ```
+
 ## Testing
 
 ### Unit Tests

@@ -112,6 +112,41 @@ rates = {
    }
    ```
 
+### Invoice Date Calculation
+
+The application uses a specific algorithm to determine invoice dates:
+
+1. **Date Extraction**:
+   - The original date is extracted from the invoice filename
+   - Format: `Invoice_[NUMBER]_[DATE].csv` (e.g., `Invoice_132212_2024-07-31.csv`)
+
+2. **Invoice Date Calculation**:
+   ```python
+   def calculate_invoice_date(self, date_str: str) -> str:
+       # Parse the original date
+       original_date = pd.to_datetime(date_str)
+       
+       # Add 2 months to get the new month
+       next_month_date = original_date + pd.DateOffset(months=2)
+       
+       # Get the last day of the month
+       next_month = next_month_date.month + 1 if next_month_date.month < 12 else 1
+       next_year = next_month_date.year + 1 if next_month_date.month == 12 else next_month_date.year
+       
+       invoice_date = pd.to_datetime(f"{next_year}-{next_month:02d}-01") - pd.Timedelta(days=1)
+       
+       return invoice_date.strftime('%Y-%m-%d')
+   ```
+
+3. **Due Date Calculation**:
+   - Due date is set to 20 days after the invoice date
+   - Implemented in both Streamlit UI and Xero API integration
+
+4. **Implementation**:
+   - In `streamlit_app.py`: Extracts date from filename and calculates invoice date
+   - In `devoli_billing.py`: Helper method `calculate_invoice_date()` ensures consistent calculation
+   - Fallback logic uses current date if no date is provided
+
 ## Customer Discounts
 
 ### SPARK Customer Discount (6%)
@@ -235,3 +270,20 @@ XERO_TENANT_ID
    - Refactor rate calculations
    - Improve test coverage
    - Enhance logging 
+
+## Authentication Flow
+
+### Configuration
+- OAuth2 callback is configured to use `http://localhost:8080`
+- The `StoppableHTTPServer` listens on port 8080 to capture the auth code
+- Token refresh is attempted first, with fallback to re-authentication if refresh fails
+- Tokens are stored in `xero_tokens.json`
+
+### Token Management
+- Tokens are automatically refreshed when expired (with 5-minute buffer)
+- If refresh fails, the app will trigger a new authentication flow
+- Token data includes:
+  - access_token
+  - refresh_token
+  - expires_at
+  - tenant_id 

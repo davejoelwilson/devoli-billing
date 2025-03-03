@@ -51,6 +51,19 @@ pip install -r requirements.txt
    - Ensure `product_mapping.csv` contains correct product codes
    - Update rates in `service_company.py` if needed
 
+## Authentication Setup
+
+1. Create a Xero app at https://developer.xero.com/app/manage/
+2. Configure the OAuth2 settings:
+   - Redirect URI: `http://localhost:8080`
+   - Make sure this matches exactly - the app uses port 8080 for auth callbacks
+3. Copy your Client ID and Client Secret
+4. Create a `.env` file with:
+   ```
+   XERO_CLIENT_ID=your_client_id
+   XERO_CLIENT_SECRET=your_client_secret
+   ```
+
 ## Usage
 
 1. Place Devoli invoice CSV files in the `bills` directory
@@ -65,6 +78,18 @@ streamlit run streamlit_app.py
    - Review customer data and charges
    - Select companies to process
    - Generate Xero invoices
+
+## Invoice Date Logic
+
+The system uses a specific logic for setting invoice dates:
+
+- **Invoice Date**: Set to the last day of the month that is 2 months after the CSV file date
+  - Example: CSV file for December 31, 2023 → Invoice date February 29, 2024
+  - Example: CSV file for January 31, 2024 → Invoice date March 31, 2024
+
+- **Due Date**: Set to 20 days after the invoice date
+
+This ensures consistent invoice dating aligned with billing cycles.
 
 ## Special Cases
 

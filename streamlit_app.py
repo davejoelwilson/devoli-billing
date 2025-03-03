@@ -209,15 +209,11 @@ def process_page():
                                 "TaxType": "OUTPUT2"
                             })
                             
-                            # Build description for display
-                            invoice_desc = ["Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)"]
-                            
-                            # Add regular number details
+                            # Add regular number details if they exist
                             if service_results['regular_number']['calls']:
                                 regular_desc = ['6492003366']
                                 for call in service_results['regular_number']['calls']:
                                     regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
-                                invoice_desc.extend(regular_desc)
                                 
                                 line_items.append({
                                     "Description": '\n'.join(regular_desc),
@@ -233,7 +229,6 @@ def process_page():
                                     number_desc = [number]
                                     for call in data['calls']:
                                         number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
-                                    invoice_desc.extend(number_desc)
                                     
                                     line_items.append({
                                         "Description": '\n'.join(number_desc),
@@ -253,7 +248,7 @@ def process_page():
                                     'Select': True,
                                     'Devoli Names': ', '.join(customers),
                                     'Xero Name': xero_name,
-                                    'Description': '\n'.join(invoice_desc),
+                                    'Description': '\n'.join(regular_desc),
                                     'Minutes': 0,  # Not used for Service Company
                                     'DDI Charges': 0,  # Base fee included in calling charges
                                     'Calling Charges': total_amount,
@@ -468,7 +463,21 @@ def process_page():
                                                 try:
                                                     # Check if this is a $0 invoice
                                                     totals = calculate_customer_totals(customer_data)
-                                                    if totals['calling_charges'] == 0:
+                                                    
+                                                    # Add debug for South Pacific Music
+                                                    if 'south pacific music' in clean_customer.lower():
+                                                        with log_container:
+                                                            st.write(f"DEBUG - South Pacific Music totals: {totals}")
+                                                            st.write(f"DEBUG - Calling charges: {totals['calling_charges']}")
+                                                            st.write(f"DEBUG - Customer data shape: {customer_data.shape}")
+                                                            call_data = customer_data[customer_data['Description'].str.contains('Calls', case=False, na=False)]
+                                                            st.write(f"DEBUG - Call data rows: {len(call_data)}")
+                                                            if not call_data.empty:
+                                                                st.write(f"DEBUG - First call row: {call_data.iloc[0].to_dict()}")
+                                                    
+                                                    # Check if this is truly a $0 invoice - no calls at all
+                                                    call_data = customer_data[customer_data['Description'].str.contains('Calls', case=False, na=False)]
+                                                    if totals['calling_charges'] == 0 and len(call_data) == 0:
                                                         status = 'Skipped'
                                                         details = 'Skipped - $0 invoice'
                                                         invoice_number = 'Skipped'
@@ -481,16 +490,37 @@ def process_page():
                                                             'Xero Invoice': invoice_number
                                                         })
                                                         continue
-
-                                                    # Existing Xero invoice creation code...
+                                                    
+                                                    # If we have call data but charges are 0, use the Amount column directly
+                                                    if totals['calling_charges'] == 0 and len(call_data) > 0:
+                                                        with log_container:
+                                                            st.warning(f"⚠️ {clean_customer} has call data but calculated charges are 0, using Amount column")
+                                                        
+                                                        # Try to recalculate using DevoliBilling's method for consistency
+                                                        billing = DevoliBilling()
+                                                        recalculated_charges, _ = billing.calculate_call_charges(call_data)
+                                                        
+                                                        if recalculated_charges > 0:
+                                                            with log_container:
+                                                                st.success(f"✅ Recalculated charges: ${recalculated_charges}")
+                                                            totals['calling_charges'] = recalculated_charges
+                                                        else:
+                                                            # Fall back to Amount column if recalculation still gives 0
+                                                            totals['calling_charges'] = call_data['Amount'].sum()
+                                                            with log_container:
+                                                                st.info(f"ℹ️ Using Amount column: ${totals['calling_charges']}")
+                                                    
+                                                    # Format dates
                                                     invoice_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
                                                     due_date = invoice_date + pd.Timedelta(days=20)
-                                                    reference = invoice_date.strftime('%b') + ' Devoli Calling Charges'
+                                                    
+                                                    # Set reference
+                                                    reference = "Devoli Calling Charges"
                                                     
                                                     if clean_customer.strip().lower() == 'the service company':
                                                         service_df = df[df['Customer Name'].str.strip() == 'The Service Company']
                                                         service_results = service_processor.process_billing(service_df)
-                                                        total_amount = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
+                                                        total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
                                                         
                                                         # Check if this is a $0 invoice
                                                         if total_amount == 0:
@@ -507,6 +537,47 @@ def process_page():
                                                             })
                                                             continue
                                                         
+                                                        # Generate line items for The Service Company
+                                                        line_items = []
+                                                        
+                                                        # Base fee line item
+                                                        line_items.append({
+                                                            "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
+                                                            "Quantity": 1.0,
+                                                            "UnitAmount": service_results['base_fee'],
+                                                            "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                                                            "TaxType": "OUTPUT2"
+                                                        })
+                                                        
+                                                        # Add regular number details if they exist
+                                                        if service_results['regular_number']['calls']:
+                                                            regular_desc = ['6492003366']
+                                                            for call in service_results['regular_number']['calls']:
+                                                                regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
+                                                            
+                                                            line_items.append({
+                                                                "Description": '\n'.join(regular_desc),
+                                                                "Quantity": 1.0,
+                                                                "UnitAmount": service_results['regular_number']['total'],
+                                                                "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                                                                "TaxType": "OUTPUT2"
+                                                            })
+                                                        
+                                                        # Add toll free number details
+                                                        for number, data in service_results['numbers'].items():
+                                                            if data['calls']:
+                                                                number_desc = [number]
+                                                                for call in data['calls']:
+                                                                    number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+                                                                
+                                                                line_items.append({
+                                                                    "Description": '\n'.join(number_desc),
+                                                                    "Quantity": 1.0,
+                                                                    "UnitAmount": data['total'],
+                                                                    "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                                                                    "TaxType": "OUTPUT2"
+                                                                })
+                                                        
                                                         # Create Xero invoice with parameters
                                                         xero_invoice = devoli_processor.create_xero_invoice(
                                                             clean_customer,
@@ -517,7 +588,8 @@ def process_page():
                                                                 'status': 'DRAFT',
                                                                 'type': 'ACCREC',
                                                                 'line_amount_types': 'Exclusive',
-                                                                'reference': reference
+                                                                'reference': reference,
+                                                                'line_items': line_items  # Pass the calculated line items here
                                                             }
                                                         )
                                                         status = 'Success'
@@ -587,7 +659,7 @@ def process_page():
                                                 if clean_customer.strip().lower() == 'the service company':
                                                     service_df = df[df['Customer Name'].str.strip() == 'The Service Company']
                                                     service_results = service_processor.process_billing(service_df)
-                                                    total_amount = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
+                                                    total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
                                                     status = 'Analyzed'
                                                     details = f"Total amount: ${total_amount:,.2f}"
                                                 else:
@@ -817,6 +889,55 @@ def process_customer(customer_name, billing_data):
     tfree_numbers = customer_data[customer_data['Short Description'].str.startswith('64800', na=False)]['Short Description'].unique()
     
     # Rest of processing...
+
+def process_selected_companies(selected_companies, df):
+    """Process selected companies and create invoices"""
+    results = []
+    
+    for company in selected_companies:
+        try:
+            # Calculate totals first
+            company_df = df[df['Customer Name'] == company]
+            calculated_results = calculate_customer_totals(df, company)
+            
+            # Create invoice with pre-calculated results
+            invoice_params = {
+                'pre_calculated_results': calculated_results,  # Pass the results
+                'date': df['Date'].iloc[0],
+                'due_date': (pd.to_datetime(df['Date'].iloc[0]) + pd.Timedelta(days=14)).strftime('%Y-%m-%d')
+            }
+            
+            invoice = st.session_state.billing_processor.create_xero_invoice(
+                company, 
+                company_df,
+                invoice_params=invoice_params
+            )
+            
+            if invoice:
+                invoice_number = invoice.get('Invoices', [{}])[0].get('InvoiceNumber', 'Created')
+                results.append({
+                    'customer': company,
+                    'status': 'Success',
+                    'details': 'Invoice created successfully',
+                    'invoice_number': invoice_number
+                })
+            else:
+                results.append({
+                    'customer': company,
+                    'status': 'Failed',
+                    'details': 'No invoice response received',
+                    'invoice_number': 'N/A'
+                })
+                
+        except Exception as e:
+            results.append({
+                'customer': company,
+                'status': 'Failed',
+                'details': str(e),
+                'invoice_number': 'N/A'
+            })
+            
+    return results
 
 def main():
     st.set_page_config(

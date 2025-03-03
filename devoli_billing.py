@@ -9,6 +9,7 @@ from typing import Dict, Optional
 import json
 import re
 import streamlit as st
+from service_company import ServiceCompanyBilling
 
 class DevoliBilling:
     def __init__(self, simulation_mode=False):
@@ -53,7 +54,7 @@ class DevoliBilling:
             'account_code': '43850',
             'rates': {
                 'local': 0.05,
-                'mobile': 0.012,
+                'mobile': 0.12,
                 'national': 0.05,
                 'tfree_mobile': 0.28,
                 'tfree_national': 0.10,
@@ -65,8 +66,8 @@ class DevoliBilling:
     
     STANDARD_RATES = {
         'local': 0.05,
-        'mobile': 0.012,
-        'australia': 0.014,
+        'mobile': 0.12,
+        'australia': 0.14,
         'national': 0.05,
         'other': 0.14
     }
@@ -196,15 +197,27 @@ class DevoliBilling:
         """Format calling charges description with details"""
         lines = ["Devoli calling charges:"]
         
-        # Only add call types that have calls
-        for call_type in ['australia', 'local', 'mobile', 'national']:
-            if call_data[call_type]['count'] > 0:
-                type_name = call_type.title()
-                count = call_data[call_type]['count']
-                duration = call_data[call_type]['duration']
-                lines.append(f"{type_name} Calls ({count} calls - {duration})")
+        # Handle case where call_data is a DataFrame (old format)
+        if isinstance(call_data, pd.DataFrame):
+            # Filter for call-related rows
+            call_mask = call_data['description'].str.contains('Calls', case=False, na=False)
+            call_data = call_data[call_mask]
+            
+            # Process each call type
+            for call_type in ['Australia', 'Local', 'Mobile', 'National']:
+                mask = call_data['description'].str.contains(call_type, case=False, na=False)
+                if mask.any():
+                    desc = call_data[mask]['description'].iloc[0]
+                    count, duration = self.parse_call_info(desc)
+                    if count > 0:
+                        lines.append(f"{call_type} Calls ({count} calls - {duration})")
         
-        # If no calls, show zeros
+        # Handle case where call_data is from call_details (new format)
+        elif isinstance(call_data, list):
+            for detail in call_data:
+                lines.append(f"{detail['type']} Calls ({detail['count']} calls - {detail['duration']})")
+        
+        # If no calls found, show zeros
         if len(lines) == 1:
             lines.extend([
                 "Australia Calls (0 calls - 00:00:00)",
@@ -227,18 +240,25 @@ class DevoliBilling:
         total_charge = 0
         call_details = []  # Store details for later display
         
+        # Debug print for troubleshooting
+        print(f"Processing call charges for data with {len(data)} rows")
+        if not data.empty:
+            print(f"First row description: {data['description'].iloc[0]}")
+        
         # Use self.rates instead of local rates dictionary
         for call_type, rate in self.rates.items():
-            mask = data['description'].str.contains(call_type, case=False, na=False)
+            mask = data['description'].str.lower().str.contains(call_type.lower(), na=False)
             if mask.any():
                 calls = data[mask]['description'].iloc[0]
                 count, duration = self.parse_call_info(calls)
                 if count > 0:
                     minutes = self.duration_to_minutes(duration)
+                    # Add debug logging
+                    print(f"Call type: {call_type}, Duration: {duration}, Minutes: {minutes}, Rate: {rate}")
                     charge = minutes * rate
                     total_charge += charge
                     
-                    # Store details instead of printing
+                    # Store details
                     call_details.append({
                         'type': call_type,
                         'count': count,
@@ -248,7 +268,31 @@ class DevoliBilling:
                         'charge': charge
                     })
         
+        # Ensure we return a non-zero value if there are call details
+        if len(call_details) > 0 and total_charge == 0:
+            print("WARNING: Call details found but total charge is 0, checking raw data...")
+            # Try to extract charges directly from the data
+            if 'amount' in data.columns:
+                direct_charges = data['amount'].sum()
+                if direct_charges > 0:
+                    print(f"Using direct charges from data: ${direct_charges}")
+                    total_charge = direct_charges
+        
         return round(total_charge, 2), call_details
+
+    def calculate_customer_totals(self, customer_data: pd.DataFrame) -> Dict:
+        """Calculate totals for a customer"""
+        # Filter for call-related rows
+        call_mask = customer_data['description'].str.contains('Calls', case=False, na=False)
+        call_data = customer_data[call_mask]
+        
+        # Calculate calling charges
+        calling_charges, details = self.calculate_call_charges(call_data)
+        
+        return {
+            'calling_charges': calling_charges,
+            'call_details': details
+        }
 
     def create_xero_invoice(self, customer, customer_data, invoice_params=None):
         """Create a draft invoice in Xero"""
@@ -266,7 +310,8 @@ class DevoliBilling:
                 'due_date': invoice_params.get('due_date', 
                     (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')),
                 'description': invoice_params.get('description', ''),
-                'line_items': invoice_params.get('line_items', [])
+                'line_items': invoice_params.get('line_items', []),
+                'pre_calculated_results': invoice_params.get('pre_calculated_results', None)
             }
             
             # Check if this is The Service Company
@@ -276,62 +321,66 @@ class DevoliBilling:
             # Create line items
             line_items = []
             
-            if is_service_company:
-                # Use pre-processed line items if available
-                if invoice_params.get('line_items'):
-                    line_items = invoice_params['line_items']
-                else:
-                    # Add base fee line item
+            # Use provided line items if available
+            if invoice_params.get('line_items'):
+                line_items = invoice_params['line_items']
+            else:
+                # Calculate charges and format description
+                calling_charges, call_details = self.calculate_call_charges(customer_data)
+                invoice_desc = invoice_params.get('description', '')
+                if not invoice_desc:
+                    invoice_desc = self.format_call_description(call_details)
+                
+                # Add calling charges line item
+                if calling_charges > 0:
                     line_items.append({
-                        "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
+                        "Description": invoice_desc,
                         "Quantity": 1.0,
-                        "UnitAmount": self.SPECIAL_CUSTOMERS['the service company']['base_fee'],
+                        "UnitAmount": float(calling_charges),
                         "AccountCode": account_code,
                         "TaxType": "OUTPUT2"
                     })
+            
+            # Skip if no charges
+            if not line_items:
+                # Check if there's call data before skipping
+                call_mask = customer_data['description'].str.contains('Calls', case=False, na=False)
+                call_data = customer_data[call_mask]
+                
+                if len(call_data) > 0:
+                    # We have call data but no line items, calculate charges properly
+                    print(f"⚠️ {customer} has call data but no line items, calculating charges")
+                    calling_charges, call_details = self.calculate_call_charges(call_data)
                     
-                    # Process the data using ServiceCompanyBilling
-                    service_processor = ServiceCompanyBilling()
-                    results = service_processor.process_billing(customer_data)
-                    
-                    # Add regular number line item if exists
-                    if results['regular_number']['calls']:
-                        description = ['6492003366']
-                        for call in results['regular_number']['calls']:
-                            description.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
-                        
+                    if calling_charges > 0:
+                        # Create a line item using our calculated charges
+                        invoice_desc = self.format_call_description(call_details)
                         line_items.append({
-                            "Description": '\n'.join(description),
+                            "Description": invoice_desc,
                             "Quantity": 1.0,
-                            "UnitAmount": float(results['regular_number']['total']),  # Ensure float
+                            "UnitAmount": float(calling_charges),
                             "AccountCode": account_code,
                             "TaxType": "OUTPUT2"
                         })
-                    
-                    # Add toll free number line items
-                    for number, data in results['numbers'].items():
-                        if data['calls']:
-                            description = [number]
-                            for call in data['calls']:
-                                description.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
-                            
+                    else:
+                        # If our calculation still gives 0, fall back to the Amount column
+                        print(f"⚠️ Calculated charges are 0, falling back to Amount column")
+                        total_amount = call_data['amount'].sum()
+                        if total_amount > 0:
+                            call_desc = call_data['description'].iloc[0]
                             line_items.append({
-                                "Description": '\n'.join(description),
+                                "Description": f"Calling charges: {call_desc}",
                                 "Quantity": 1.0,
-                                "UnitAmount": float(data['total']),  # Ensure float
+                                "UnitAmount": float(total_amount),
                                 "AccountCode": account_code,
                                 "TaxType": "OUTPUT2"
                             })
-            else:
-                # Standard customer - calculate total charges
-                charges, _ = self.calculate_call_charges(customer_data)
-                line_items.append({
-                    "Description": invoice_params.get('description', 'Devoli Calling Charges'),
-                    "Quantity": 1.0,
-                    "UnitAmount": float(charges),  # Ensure float
-                    "AccountCode": account_code,
-                    "TaxType": "OUTPUT2"
-                })
+                        else:
+                            print(f"ℹ️ Skipping {customer} - $0 invoice (no charges in call data)")
+                            return None
+                else:
+                    print(f"ℹ️ Skipping {customer} - $0 invoice (no call data)")
+                    return None
             
             # Find Xero contact
             xero_name = self.customer_mapping.get(customer.strip())
@@ -351,38 +400,38 @@ class DevoliBilling:
             
             if not xero_contact:
                 raise ValueError(f"Contact '{xero_name}' not found in Xero")
-
-            # Build invoice data
+            
+            # Create the invoice
             invoice_data = {
-                "Type": "ACCREC",
-                "Contact": {"ContactID": xero_contact['ContactID']},
-                "Date": invoice_params['date'],
-                "DueDate": invoice_params['due_date'],
+                "Type": invoice_params.get('type', 'ACCREC'),
+                "Contact": xero_contact,
                 "LineItems": line_items,
-                "Status": "DRAFT",
-                "LineAmountTypes": "Exclusive",
-                "Reference": invoice_params.get('reference', 'Devoli Calling Charges')
+                "Date": invoice_params.get('date', datetime.now().strftime('%Y-%m-%d')),
+                "DueDate": invoice_params.get('due_date', (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d')),
+                "Reference": invoice_params.get('reference', "Devoli Calling Charges"),
+                "Status": invoice_params.get('status', 'DRAFT')
             }
-
-            # Create invoice
-            if not self.simulation_mode:
-                headers = self.ensure_xero_connection()
-                headers['Accept'] = 'application/json'
-                
-                response = requests.post(
-                    "https://api.xero.com/api.xro/2.0/Invoices",
-                    headers=headers,
-                    json=invoice_data
-                )
-                response.raise_for_status()
-                return response.json()
-            else:
-                return {"status": "simulated", "data": invoice_data}
+            
+            # Add debug logging
+            print(f"Creating Xero invoice for {customer}")
+            print(f"Line items: {json.dumps(line_items, indent=2)}")
+            
+            # Send to Xero
+            headers = self.ensure_xero_connection()
+            headers['Accept'] = 'application/json'
+            
+            response = requests.post(
+                "https://api.xero.com/api.xro/2.0/Invoices",
+                headers=headers,
+                json={"Invoices": [invoice_data]}
+            )
+            response.raise_for_status()
+            return response.json()
             
         except Exception as e:
-            st.error(f"Error creating invoice: {str(e)}")
+            print(f"Error creating Xero invoice: {str(e)}")
             if hasattr(e, 'response'):
-                st.error(f"Response: {e.response.text}")
+                print(f"Response: {e.response.text}")
             raise
 
     def fetch_xero_contacts(self):
@@ -548,8 +597,8 @@ class DevoliBilling:
         """Process calling charges with vectorized operations where possible"""
         # Standard rates
         rates = {
-            'Australian Calls': 0.014,
-            'Mobile Calls': 0.012,
+            'Australian Calls': 0.14,
+            'Mobile Calls': 0.12,
             'National Calls': 0.05,
             'Local Calls': 0.05,
             'Other Calls': 0.14,
@@ -743,24 +792,6 @@ class DevoliBilling:
         
         return results
 
-    def duration_to_minutes(self, time_str: str) -> int:
-        """Convert any duration string to total minutes"""
-        if not time_str:
-            return 0
-            
-        # First convert to standard HH:MM:SS
-        std_time = self.parse_duration(time_str)
-        
-        # Split and convert
-        hours, minutes, seconds = map(int, std_time.split(':'))
-        
-        # Calculate total minutes, rounding up if there are seconds
-        total_minutes = (hours * 60) + minutes
-        if seconds > 0:
-            total_minutes += 1
-            
-        return total_minutes
-
     def parse_duration(self, time_str: str) -> str:
         """Convert any duration string to HH:MM:SS format
         
@@ -771,6 +802,10 @@ class DevoliBilling:
         """
         if not time_str or time_str.strip() == "00:00:00":
             return "00:00:00"
+            
+        # First check if it's already in HH:MM:SS format
+        if re.match(r'^\d+:\d{2}:\d{2}$', time_str):
+            return time_str
             
         match = self.DURATION_PATTERN.search(time_str)
         if not match:
@@ -785,6 +820,30 @@ class DevoliBilling:
         total_hours = (days * 24) + hours
         
         return f"{total_hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def duration_to_minutes(self, time_str: str) -> int:
+        """Convert any duration string to total minutes"""
+        if not time_str:
+            return 0
+            
+        # Handle direct HH:MM:SS format first
+        if re.match(r'^\d+:\d{2}:\d{2}$', time_str):
+            hours, minutes, seconds = map(int, time_str.split(':'))
+            total_minutes = (hours * 60) + minutes
+            if seconds > 0:
+                total_minutes += 1
+            return total_minutes
+            
+        # For other formats, use parse_duration
+        std_time = self.parse_duration(time_str)
+        hours, minutes, seconds = map(int, std_time.split(':'))
+        
+        # Calculate total minutes, rounding up if there are seconds
+        total_minutes = (hours * 60) + minutes
+        if seconds > 0:
+            total_minutes += 1
+            
+        return total_minutes
 
     def load_voip_customers(self, df):
         """Load only customers with VoIP/calling products"""

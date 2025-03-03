@@ -406,8 +406,8 @@ class DevoliBilling:
                 "Type": invoice_params.get('type', 'ACCREC'),
                 "Contact": xero_contact,
                 "LineItems": line_items,
-                "Date": invoice_params.get('date', datetime.now().strftime('%Y-%m-%d')),
-                "DueDate": invoice_params.get('due_date', (datetime.now() + timedelta(days=20)).strftime('%Y-%m-%d')),
+                "Date": invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d'))),
+                "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
                 "Reference": invoice_params.get('reference', "Devoli Calling Charges"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }
@@ -825,7 +825,7 @@ class DevoliBilling:
         """Convert any duration string to total minutes"""
         if not time_str:
             return 0
-            
+        
         # Handle direct HH:MM:SS format first
         if re.match(r'^\d+:\d{2}:\d{2}$', time_str):
             hours, minutes, seconds = map(int, time_str.split(':'))
@@ -844,6 +844,37 @@ class DevoliBilling:
             total_minutes += 1
             
         return total_minutes
+
+    def calculate_invoice_date(self, date_str: str) -> str:
+        """
+        Calculate the invoice date based on the new logic:
+        - Add 2 months to the original date
+        - Set to the last day of that month
+        
+        Args:
+            date_str: Date string in format YYYY-MM-DD
+            
+        Returns:
+            Invoice date string in format YYYY-MM-DD
+        """
+        try:
+            # Parse the original date
+            original_date = pd.to_datetime(date_str)
+            
+            # Add 2 months to get the new month
+            next_month_date = original_date + pd.DateOffset(months=2)
+            
+            # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
+            next_month = next_month_date.month + 1 if next_month_date.month < 12 else 1
+            next_year = next_month_date.year + 1 if next_month_date.month == 12 else next_month_date.year
+            
+            invoice_date = pd.to_datetime(f"{next_year}-{next_month:02d}-01") - pd.Timedelta(days=1)
+            
+            return invoice_date.strftime('%Y-%m-%d')
+        except Exception as e:
+            print(f"Error calculating invoice date: {e}")
+            # Fall back to today's date if there's an error
+            return datetime.now().strftime('%Y-%m-%d')
 
     def load_voip_customers(self, df):
         """Load only customers with VoIP/calling products"""

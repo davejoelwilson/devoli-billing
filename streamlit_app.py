@@ -295,7 +295,19 @@ def process_page():
                     process_df = pd.DataFrame(process_data)
                     
                     # Calculate current month total from raw file
-                    current_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                    # Extract the original date from the filename
+                    original_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                    
+                    # Add 2 months to get the new month
+                    # Then find the last day of that month
+                    next_month_date = original_date + pd.DateOffset(months=2)
+                    # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
+                    invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
+                    
+                    # Due date is 20 days after invoice date
+                    due_date = invoice_date + pd.Timedelta(days=20)
+                    
+                    current_date = original_date
                     current_total = df['Amount'].sum()
                     
                     # Calculate previous month total
@@ -511,8 +523,21 @@ def process_page():
                                                                 st.info(f"ℹ️ Using Amount column: ${totals['calling_charges']}")
                                                     
                                                     # Format dates
-                                                    invoice_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                                                    # Extract the original date from the filename
+                                                    original_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                                                    
+                                                    # Add 2 months to get the new month
+                                                    # Then find the last day of that month
+                                                    next_month_date = original_date + pd.DateOffset(months=2)
+                                                    # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
+                                                    invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
+                                                    
+                                                    # Due date is 20 days after invoice date
                                                     due_date = invoice_date + pd.Timedelta(days=20)
+                                                    
+                                                    with log_container:
+                                                        st.info(f"📅 Original date from file: {original_date.strftime('%Y-%m-%d')}")
+                                                        st.info(f"📅 New invoice date (last day of month+2): {invoice_date.strftime('%Y-%m-%d')}")
                                                     
                                                     # Set reference
                                                     reference = "Devoli Calling Charges"

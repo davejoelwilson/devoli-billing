@@ -874,8 +874,8 @@ class DevoliBilling:
 
     def calculate_invoice_date(self, date_str: str) -> str:
         """
-        Calculate the invoice date based on the new logic:
-        - Add 2 months to the original date
+        Calculate the invoice date based on the logic:
+        - Add 1 month to the original date
         - Set to the last day of that month
         
         Args:
@@ -888,8 +888,8 @@ class DevoliBilling:
             # Parse the original date
             original_date = pd.to_datetime(date_str)
             
-            # Add 2 months to get the new month
-            next_month_date = original_date + pd.DateOffset(months=2)
+            # Add 1 month to get the new month
+            next_month_date = original_date + pd.DateOffset(months=1)
             
             # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
             next_month = next_month_date.month + 1 if next_month_date.month < 12 else 1

@@ -429,16 +429,13 @@ class DevoliBilling:
             
             # Create the invoice
             invoice_date = invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))
-            invoice_month = pd.to_datetime(invoice_date)
-            next_month = invoice_month + pd.DateOffset(months=1)
-            
             invoice_data = {
                 "Type": invoice_params.get('type', 'ACCREC'),
                 "Contact": xero_contact,
                 "LineItems": line_items,
                 "Date": invoice_date,
                 "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_date) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
-                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {next_month.strftime('%B %Y')}"),
+                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }
             
@@ -878,14 +875,14 @@ class DevoliBilling:
     def calculate_invoice_date(self, date_str: str) -> str:
         """
         For January data:
-        - Invoice date will be January 31st
+        - Invoice date will be February 28th/29th
         - Reference will show February
         """
         try:
             # Parse the original date
             date = pd.to_datetime(date_str)
             
-            # Get last day of current month
+            # Move to next month
             if date.month == 12:
                 next_month = 1
                 year = date.year + 1
@@ -893,7 +890,8 @@ class DevoliBilling:
                 next_month = date.month + 1
                 year = date.year
             
-            last_day = pd.to_datetime(f"{date.year}-{date.month}-01") + pd.offsets.MonthEnd(0)
+            # Get last day of next month
+            last_day = pd.to_datetime(f"{year}-{next_month}-01") + pd.offsets.MonthEnd(0)
             return last_day.strftime('%Y-%m-%d')
             
         except Exception as e:

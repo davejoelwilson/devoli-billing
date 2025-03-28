@@ -275,18 +275,30 @@ def process_page():
                     
                     process_df = pd.DataFrame(df_data)
                     
-                    # Add process_df to session state
+                    # Store data in session state
                     st.session_state.process_df = process_df
-                    
-                    # Add process_data to session state
                     st.session_state.process_data = process_data
                     
                     # Display dataframe
                     st.write(f"Found {len(process_data)} customers with charges")
                     
-                    # Create a dataframe with checkboxes
+                    # Add Select All and Clear All buttons
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Select All", key="select_all"):
+                            # Update process_df to select all rows that aren't already processed
+                            st.session_state.process_df['Select'] = ~st.session_state.process_df['Already Processed']
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("Clear All", key="clear_all"):
+                            # Update process_df to deselect all rows
+                            st.session_state.process_df['Select'] = False
+                            st.rerun()
+                    
+                    # Create a dataframe with checkboxes using the data from session state
                     edited_df = st.data_editor(
-                        process_df,
+                        st.session_state.process_df,
                         column_config={
                             "Select": st.column_config.CheckboxColumn(
                                 "Process",
@@ -305,23 +317,8 @@ def process_page():
                         key="process_editor"
                     )
                     
-                    # Add 'Select All' button
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Select All", key="select_all"):
-                            # Update process_df to select all rows that aren't already processed
-                            updated_df = st.session_state.process_df.copy()
-                            updated_df['Select'] = ~updated_df['Already Processed']
-                            st.session_state.process_df = updated_df
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("Clear All", key="clear_all"):
-                            # Update process_df to deselect all rows
-                            updated_df = st.session_state.process_df.copy()
-                            updated_df['Select'] = False
-                            st.session_state.process_df = updated_df
-                            st.rerun()
+                    # Update session state with any changes made in the editor
+                    st.session_state.process_df = edited_df
                     
                     # Get selected companies
                     selected_rows = edited_df[edited_df['Select'] == True]

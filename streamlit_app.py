@@ -372,7 +372,8 @@ def process_page():
                                 
                                 # Update process_df to show as processed
                                 process_df.loc[process_df['Xero Name'] == xero_name, 'Already Processed'] = True
-                                process_df.loc[process_df['Xero Name'] == xero_name, 'Select'] = False
+                                # Don't clear the selection flag - this deselects everything
+                                # process_df.loc[process_df['Xero Name'] == xero_name, 'Select'] = False
                             
                             # Update session state
                             st.session_state.process_df = process_df

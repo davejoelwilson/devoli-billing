@@ -287,6 +287,8 @@ def process_page():
                         st.session_state.select_all_clicked = False
                     if "clear_all_clicked" not in st.session_state:
                         st.session_state.clear_all_clicked = False
+                    if "newly_processed" not in st.session_state:
+                        st.session_state.newly_processed = []
                     
                     # Process the DataFrame before displaying it based on button states
                     if st.session_state.select_all_clicked:
@@ -296,6 +298,14 @@ def process_page():
                     if st.session_state.clear_all_clicked:
                         process_df["Select"] = False
                         st.session_state.clear_all_clicked = False  # Reset
+                    
+                    # Update the newly processed companies
+                    if st.session_state.newly_processed:
+                        for company_name in st.session_state.newly_processed:
+                            mask = process_df["Xero Name"] == company_name
+                            process_df.loc[mask, "Already Processed"] = True
+                        # Clear the newly processed list
+                        st.session_state.newly_processed = []
                     
                     # Add Select All and Clear All buttons
                     col1, col2 = st.columns(2)
@@ -364,21 +374,19 @@ def process_page():
                             # Show success message
                             st.success(f"Successfully processed {len(results)} companies")
                             
-                            # Update the dataframe to reflect processed companies
+                            # Store the newly processed companies to update the UI after rerun
+                            if 'newly_processed' not in st.session_state:
+                                st.session_state.newly_processed = []
+                                
+                            # Add newly processed companies to the list
+                            st.session_state.newly_processed = [company['name'] for company in selected_companies]
+                            
+                            # Mark as processed in database
                             for company in selected_companies:
                                 xero_name = company['name']
-                                # Mark as processed in database
                                 st.session_state.log_db.mark_invoice_as_processed(xero_name, invoice_filename)
-                                
-                                # Update process_df to show as processed
-                                process_df.loc[process_df['Xero Name'] == xero_name, 'Already Processed'] = True
-                                # Don't clear the selection flag - this deselects everything
-                                # process_df.loc[process_df['Xero Name'] == xero_name, 'Select'] = False
                             
-                            # Update session state
-                            st.session_state.process_df = process_df
-                            
-                            # Force rerun to refresh the UI
+                            # Force rerun to refresh the UI - no need to modify process_df here
                             st.rerun()
                     else:
                         st.info("Select at least one company to process")

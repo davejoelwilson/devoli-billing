@@ -6,4 +6,5 @@ python-Levenshtein  # Optional, but makes fuzzywuzzy faster
 requests
 plotly
 numpy
-watchdog  # For better Streamlit performance 
+watchdog  # For better Streamlit performance
+# SQLite is included in Python's standard library, no need to add it 

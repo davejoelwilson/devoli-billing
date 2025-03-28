@@ -8,6 +8,9 @@ import re
 from service_company import ServiceCompanyBilling
 import time
 from product_analysis import product_analysis_page
+from log_database import LogDatabase
+from log_history_page import log_history_page
+import datetime
 
 def init_session_state():
     """Initialize session state variables"""
@@ -26,6 +29,10 @@ def init_session_state():
             st.session_state.xero_connected = st.session_state.billing_processor.ensure_xero_connection()
         except:
             st.session_state.xero_connected = False
+    if 'log_db' not in st.session_state:
+        st.session_state.log_db = LogDatabase()
+    if 'current_file_log_id' not in st.session_state:
+        st.session_state.current_file_log_id = None
 
 def navigate_to(page):
     st.session_state.page = page
@@ -133,8 +140,11 @@ def process_page():
                 if 'process_df' in st.session_state:
                     del st.session_state.process_df
                 st.session_state.last_invoice = selected_invoice
+                # Reset current file log ID when invoice changes
+                st.session_state.current_file_log_id = None
             
             invoice_file = os.path.join("bills", invoice_options[selected_invoice])
+            invoice_filename = invoice_options[selected_invoice]
             
             # Create a placeholder for the temporary message
             msg_placeholder = st.empty()
@@ -145,6 +155,8 @@ def process_page():
             msg_placeholder.empty()
             
             df = pd.read_csv(invoice_file)
+            # Set the name attribute for tracking
+            df.name = invoice_file
             
             # Normalize column names to be case-insensitive
             df.columns = df.columns.str.strip()  # Remove any whitespace
@@ -179,6 +191,11 @@ def process_page():
                             xero_groups[xero_name] = []
                         xero_groups[xero_name].append(clean_customer)
                 
+                # Log file processing if not already logged
+                if 'current_file_log_id' not in st.session_state or not st.session_state.current_file_log_id:
+                    file_log_id = st.session_state.log_db.log_file_processing(invoice_filename)
+                    st.session_state.current_file_log_id = file_log_id
+                
                 # Create selection table
                 process_data = []
                 for xero_name, customers in xero_groups.items():
@@ -197,584 +214,171 @@ def process_page():
                         service_results = service_processor.process_billing(service_df)
                         
                         if service_results:
-                            # Create line items for Xero
-                            line_items = []
+                            # Add to process_data for display in table
+                            ddi_charges = 0
+                            calling_charges = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
+                            total = service_results['total']
                             
-                            # Base fee line item
-                            line_items.append({
-                                "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
-                                "Quantity": 1.0,
-                                "UnitAmount": service_results['base_fee'],
-                                "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                "TaxType": "OUTPUT2"
-                            })
+                            # Check if invoice has already been processed
+                            already_processed = st.session_state.log_db.check_if_processed(invoice_filename, xero_name)
                             
-                            # Add regular number details if they exist
-                            if service_results['regular_number']['calls']:
-                                regular_desc = ['6492003366']
-                                for call in service_results['regular_number']['calls']:
-                                    regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
-                                
-                                line_items.append({
-                                    "Description": '\n'.join(regular_desc),
-                                    "Quantity": 1.0,
-                                    "UnitAmount": service_results['regular_number']['total'],
-                                    "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                    "TaxType": "OUTPUT2"
-                                })
-                            
-                            # Add toll free number details
-                            for number, data in service_results['numbers'].items():
-                                if data['calls']:
-                                    number_desc = [number]
-                                    for call in data['calls']:
-                                        number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
-                                    
-                                    line_items.append({
-                                        "Description": '\n'.join(number_desc),
-                                        "Quantity": 1.0,
-                                        "UnitAmount": data['total'],
-                                        "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                        "TaxType": "OUTPUT2"
-                                    })
-                            
-                            # Calculate total before adding to process_data
-                            total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
-                            
-                            # Only add to process_data if total is not $0
-                            if total_amount > 0:
-                                # Add to process_data for display in table
-                                process_data.append({
-                                    'Select': True,
-                                    'Devoli Names': ', '.join(customers),
-                                    'Xero Name': xero_name,
-                                    'Description': '\n'.join(regular_desc),
-                                    'Minutes': 0,  # Not used for Service Company
-                                    'DDI Charges': 0,  # Base fee included in calling charges
-                                    'Calling Charges': total_amount,
-                                    'Total': total_amount,
-                                    'Status': 'Ready'
-                                })
-                                
-                                # Store line items for later use
-                                st.session_state[f"line_items_{xero_name}"] = line_items
-                            
-                        else:
-                            st.warning(f"No data found for The Service Company")
-                    else:
-                        # Regular customer processing
-                        totals = calculate_customer_totals(combined_df)
-                        invoice_desc = service_processor.format_call_description(service_processor.parse_call_data(combined_df))
-                        
-                        # After building invoice_desc
-                        max_length = 3900
-                        if len(invoice_desc) > max_length:
-                            invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
-                            st.warning("Description truncated for Xero compatibility")
-                        
-                        # Only add to process_data if calling charges are not $0
-                        if totals['calling_charges'] > 0:
                             process_data.append({
-                                'Select': True,
+                                'Select': not already_processed,
                                 'Devoli Names': ', '.join(customers),
                                 'Xero Name': xero_name,
-                                'Description': invoice_desc,
-                                'Minutes': totals['minutes'],
-                                'DDI Charges': totals['ddi_charges'],
-                                'Calling Charges': totals['calling_charges'],
-                                'Total': totals['total_charges'],
-                                'Status': 'Ready'
+                                'DDI Charges': f"${ddi_charges:.2f}",
+                                'Calling Charges': f"${calling_charges:.2f}",
+                                'Total': f"${total:.2f}",
+                                'Already Processed': already_processed,
+                                'customer_data': service_df
                             })
+                    else:
+                        # Skip if no data
+                        if combined_df.empty:
+                            continue
+                            
+                        # Standard calculation 
+                        totals = calculate_customer_totals(combined_df)
+                        
+                        # Skip if $0 total
+                        if totals['total_charges'] == 0:
+                            continue
+                        
+                        # Check if invoice has already been processed
+                        already_processed = st.session_state.log_db.check_if_processed(invoice_filename, xero_name)
+                        
+                        # Add to process data
+                        process_data.append({
+                            'Select': not already_processed,
+                            'Devoli Names': ', '.join(customers),
+                            'Xero Name': xero_name,
+                            'DDI Charges': f"${totals['ddi_charges']:.2f}",
+                            'Calling Charges': f"${totals['calling_charges']:.2f}",
+                            'Total': f"${totals['total_charges']:.2f}",
+                            'Already Processed': already_processed,
+                            'customer_data': combined_df  # Store customer data for later processing
+                        })
                 
+                # Create dataframe from process_data
                 if process_data:
-                    # Set all Select values to False by default
+                    df_data = []
                     for item in process_data:
-                        item['Select'] = False
+                        df_data.append({
+                            'Select': item['Select'],
+                            'Devoli Names': item['Devoli Names'],
+                            'Xero Name': item['Xero Name'],
+                            'DDI Charges': item['DDI Charges'],
+                            'Calling Charges': item['Calling Charges'],
+                            'Total': item['Total'],
+                            'Already Processed': item['Already Processed']
+                        })
                     
-                    # Create DataFrame with selection column
-                    process_df = pd.DataFrame(process_data)
+                    process_df = pd.DataFrame(df_data)
                     
-                    # Calculate current month total from raw file
-                    # Extract the original date from the filename
-                    original_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
+                    # Add process_df to session state
+                    st.session_state.process_df = process_df
                     
-                    # Add 2 months to get the new month
-                    # Then find the last day of that month
-                    next_month_date = original_date + pd.DateOffset(months=2)
-                    # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
-                    invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
+                    # Add process_data to session state
+                    st.session_state.process_data = process_data
                     
-                    # Due date is 20 days after invoice date
-                    due_date = invoice_date + pd.Timedelta(days=20)
+                    # Display dataframe
+                    st.write(f"Found {len(process_data)} customers with charges")
                     
-                    current_date = original_date
-                    current_total = df['Amount'].sum()
-                    
-                    # Calculate previous month total
-                    previous_date = current_date - pd.DateOffset(months=1)
-                    previous_total = 0
-                    
-                    # Find previous month's file
-                    for f in os.listdir("bills"):
-                        if f.startswith("Invoice_") and f.endswith(".csv"):
-                            file_date = pd.to_datetime(f.split('_')[2].split('.')[0])
-                            if file_date.strftime('%Y-%m') == previous_date.strftime('%Y-%m'):
-                                prev_df = pd.read_csv(os.path.join("bills", f))
-                                prev_df.columns = prev_df.columns.str.strip()
-                                prev_df = prev_df.rename(columns={col: col.title() for col in prev_df.columns})
-                                previous_total = prev_df['Amount'].sum()
-                                break
-                    
-                    # Show month totals
-                    st.subheader("Monthly Totals")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.metric(
-                            f"Current Month ({current_date.strftime('%B %Y')})",
-                            f"${current_total:,.2f}"
-                        )
-                    
-                    with col2:
-                        st.metric(
-                            f"Previous Month ({previous_date.strftime('%B %Y')})",
-                            f"${previous_total:,.2f}"
-                        )
-                    
-                    with col3:
-                        change = current_total - previous_total
-                        pct_change = ((current_total - previous_total) / previous_total * 100) if previous_total != 0 else 0
-                        st.metric(
-                            "Month over Month Change",
-                            f"${change:+,.2f}",
-                            f"{pct_change:+.1f}%",
-                            delta_color="normal"
-                        )
-                    
-                    st.divider()
-                    
-                    # Add Select All button and get its state
-                    col1, col2 = st.columns([1, 9])  # Create two columns for layout
-                    select_all = col1.button("Select All")
-                    
-                    # Store the DataFrame in session state if not already there
-                    if 'process_df' not in st.session_state:
-                        st.session_state.process_df = process_df.copy()
-                    
-                    # Update all checkboxes when Select All is clicked
-                    if select_all:
-                        st.session_state.process_df['Select'] = True
-                    
-                    # Display the dataframe with checkboxes and get edited version
+                    # Create a dataframe with checkboxes
                     edited_df = st.data_editor(
-                        st.session_state.process_df[['Select', 'Xero Name', 'Description', 'Calling Charges']].assign(
-                            **{
-                                'Discount': lambda x: x.apply(lambda row: row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0, axis=1),
-                                'Net Amount': lambda x: x.apply(lambda row: row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0), axis=1),
-                                'Call Charges inc GST': lambda x: x.apply(lambda row: (row['Calling Charges'] - (row['Calling Charges'] * 0.06 if 'SPARK' in row['Xero Name'].upper() else 0)) * 1.15, axis=1)
-                            }
-                        ),
-                        hide_index=True,
+                        process_df,
                         column_config={
                             "Select": st.column_config.CheckboxColumn(
                                 "Process",
-                                help="Select companies to process",
+                                help="Select customers to process",
                                 default=False
                             ),
-                            "Xero Name": st.column_config.TextColumn(
-                                "Company",
-                                help="Company name in Xero"
-                            ),
-                            "Calling Charges": st.column_config.NumberColumn(
-                                "Call Charges (ex GST)",
-                                help="Call charges excluding GST",
-                                format="$%.2f"
-                            ),
-                            "Discount": st.column_config.NumberColumn(
-                                "Discount (6%)",
-                                help="6% discount for SPARK customers",
-                                format="$%.2f"
-                            ),
-                            "Net Amount": st.column_config.NumberColumn(
-                                "Net Amount (ex GST)",
-                                help="Amount after discount, before GST",
-                                format="$%.2f"
-                            ),
-                            "Call Charges inc GST": st.column_config.NumberColumn(
-                                "Call Charges (inc GST)",
-                                help="Call charges including GST after discount",
-                                format="$%.2f"
+                            "Already Processed": st.column_config.CheckboxColumn(
+                                "Already Processed",
+                                help="Customer was already processed",
+                                disabled=True
                             )
                         },
-                        disabled=["Xero Name", "Description", "Calling Charges", "Discount", "Net Amount", "Call Charges inc GST"],
+                        disabled=["Devoli Names", "Xero Name", "DDI Charges", "Calling Charges", "Total", "Already Processed"],
+                        hide_index=True,
+                        use_container_width=True,
                         key="process_editor"
                     )
                     
-                    # Add back the Devoli Names and Minutes columns to the edited DataFrame
-                    edited_df = edited_df.join(st.session_state.process_df[['Devoli Names', 'Minutes']])
+                    # Add 'Select All' button
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Select All", key="select_all"):
+                            # Update process_df to select all rows that aren't already processed
+                            updated_df = st.session_state.process_df.copy()
+                            updated_df['Select'] = ~updated_df['Already Processed']
+                            st.session_state.process_df = updated_df
+                            st.rerun()
                     
-                    # Update session state with edited values
-                    st.session_state.process_df = edited_df.copy()
+                    with col2:
+                        if st.button("Clear All", key="clear_all"):
+                            # Update process_df to deselect all rows
+                            updated_df = st.session_state.process_df.copy()
+                            updated_df['Select'] = False
+                            st.session_state.process_df = updated_df
+                            st.rerun()
                     
-                    # Get selected customers from the edited DataFrame
-                    selected_customers = edited_df[edited_df['Select']]['Devoli Names'].tolist()
+                    # Get selected companies
+                    selected_rows = edited_df[edited_df['Select'] == True]
+                    selected_companies = []
                     
-                    # Show skipped customers
-                    st.divider()
-                    st.subheader("Skipped Customers")
-                    for xero_name, customers in xero_groups.items():
-                        # Check if this customer was skipped
-                        if not any(xero_name == row['Xero Name'] for row in process_data):
-                            st.info(f"ℹ️ Skipping {xero_name} - $0 calling charges")
+                    if not selected_rows.empty:
+                        for _, row in selected_rows.iterrows():
+                            xero_name = row['Xero Name']
+                            # Find the corresponding process_data entry
+                            data_entry = next(item for item in process_data if item['Xero Name'] == xero_name)
+                            selected_companies.append({
+                                'name': xero_name,
+                                'devoli_names': row['Devoli Names'],
+                                'total': row['Total'],
+                                'data': data_entry['customer_data']
+                            })
                     
-                    # Process button
-                    if selected_customers:
-                        process_button_text = "Process Selected Companies" if st.session_state.xero_connected else "Analyze Selected Companies (Xero Disabled)"
-                        if st.button(process_button_text):
-                            with st.spinner("Processing..."):
-                                # Create containers for logging
-                                log_container = st.container()
-                                results_container = st.container()
+                    # Store selected companies in session state
+                    st.session_state.selected_companies = selected_companies
+                    
+                    # Add a continue button
+                    if selected_companies:
+                        if st.button("Process Selected Companies", key="process_selected"):
+                            # Process the selected companies
+                            results = process_selected_companies(selected_companies, df)
+                            
+                            # Add details to session state
+                            st.session_state.processing_results = results
+                            
+                            # Show success message
+                            st.success(f"Successfully processed {len(results)} companies")
+                            
+                            # Update the dataframe to reflect processed companies
+                            for company in selected_companies:
+                                xero_name = company['name']
+                                # Mark as processed in database
+                                st.session_state.log_db.mark_invoice_as_processed(xero_name, invoice_filename)
                                 
-                                # Initialize progress bar
-                                total_customers = sum(len(customer_list.split(', ')) for customer_list in selected_customers)
-                                progress_bar = st.progress(0)
-                                progress_text = st.empty()
-                                
-                                results = []
-                                processed_count = 0
-                                
-                                for customer_list in selected_customers:
-                                    for customer in customer_list.split(', '):
-                                        try:
-                                            clean_customer = customer.strip()
-                                            xero_name = mappings[clean_customer]
-                                            
-                                            # Update progress
-                                            processed_count += 1
-                                            progress = processed_count / total_customers
-                                            progress_bar.progress(progress)
-                                            progress_text.text(f"Processing {processed_count} of {total_customers}: {clean_customer}")
-                                            
-                                            # Get the data for this customer
-                                            customer_data = df[df['Customer Name'] == clean_customer]
-                                            
-                                            # Show processing status in a cleaner way
-                                            with log_container:
-                                                if st.session_state.xero_connected:
-                                                    st.info(f"📝 Creating invoice for {clean_customer} → {xero_name} ({len(customer_data)} records)")
-                                                else:
-                                                    st.info(f"📝 Analyzing data for {clean_customer} → {xero_name} ({len(customer_data)} records)")
-                                            
-                                            # Initialize status and details
-                                            status = 'Processing'
-                                            details = 'Processing started'
-                                            xero_invoice = None
-                                            
-                                            if st.session_state.xero_connected:
-                                                try:
-                                                    # Check if this is a $0 invoice
-                                                    totals = calculate_customer_totals(customer_data)
-                                                    
-                                                    # Add debug for South Pacific Music
-                                                    if 'south pacific music' in clean_customer.lower():
-                                                        with log_container:
-                                                            st.write(f"DEBUG - South Pacific Music totals: {totals}")
-                                                            st.write(f"DEBUG - Calling charges: {totals['calling_charges']}")
-                                                            st.write(f"DEBUG - Customer data shape: {customer_data.shape}")
-                                                            call_data = customer_data[customer_data['Description'].str.contains('Calls', case=False, na=False)]
-                                                            st.write(f"DEBUG - Call data rows: {len(call_data)}")
-                                                            if not call_data.empty:
-                                                                st.write(f"DEBUG - First call row: {call_data.iloc[0].to_dict()}")
-                                                    
-                                                    # Check if this is truly a $0 invoice - no calls at all
-                                                    call_data = customer_data[customer_data['Description'].str.contains('Calls', case=False, na=False)]
-                                                    if totals['calling_charges'] == 0 and len(call_data) == 0:
-                                                        status = 'Skipped'
-                                                        details = 'Skipped - $0 invoice'
-                                                        invoice_number = 'Skipped'
-                                                        with log_container:
-                                                            st.info(f"ℹ️ Skipping {clean_customer} - $0 invoice")
-                                                        results.append({
-                                                            'Customer': clean_customer,
-                                                            'Status': status,
-                                                            'Details': details,
-                                                            'Xero Invoice': invoice_number
-                                                        })
-                                                        continue
-                                                    
-                                                    # If we have call data but charges are 0, use the Amount column directly
-                                                    if totals['calling_charges'] == 0 and len(call_data) > 0:
-                                                        with log_container:
-                                                            st.warning(f"⚠️ {clean_customer} has call data but calculated charges are 0, using Amount column")
-                                                        
-                                                        # Try to recalculate using DevoliBilling's method for consistency
-                                                        billing = DevoliBilling()
-                                                        recalculated_charges, _ = billing.calculate_call_charges(call_data)
-                                                        
-                                                        if recalculated_charges > 0:
-                                                            with log_container:
-                                                                st.success(f"✅ Recalculated charges: ${recalculated_charges}")
-                                                            totals['calling_charges'] = recalculated_charges
-                                                        else:
-                                                            # Fall back to Amount column if recalculation still gives 0
-                                                            totals['calling_charges'] = call_data['Amount'].sum()
-                                                            with log_container:
-                                                                st.info(f"ℹ️ Using Amount column: ${totals['calling_charges']}")
-                                                    
-                                                    # Format dates
-                                                    # Extract the original date from the filename
-                                                    original_date = pd.to_datetime(invoice_file.split('_')[2].split('.')[0])
-                                                    
-                                                    # Add 2 months to get the new month
-                                                    # Then find the last day of that month
-                                                    next_month_date = original_date + pd.DateOffset(months=2)
-                                                    # Get the last day of the month by going to the next month's 1st day and subtracting 1 day
-                                                    invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
-                                                    
-                                                    # Due date is 20 days after invoice date
-                                                    due_date = invoice_date + pd.Timedelta(days=20)
-                                                    
-                                                    with log_container:
-                                                        st.info(f"📅 Original date from file: {original_date.strftime('%Y-%m-%d')}")
-                                                        st.info(f"📅 New invoice date (last day of month+2): {invoice_date.strftime('%Y-%m-%d')}")
-                                                    
-                                                    # Set reference
-                                                    reference = "Devoli Calling Charges"
-                                                    
-                                                    if clean_customer.strip().lower() == 'the service company':
-                                                        service_df = df[df['Customer Name'].str.strip() == 'The Service Company']
-                                                        service_results = service_processor.process_billing(service_df)
-                                                        total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
-                                                        
-                                                        # Check if this is a $0 invoice
-                                                        if total_amount == 0:
-                                                            status = 'Skipped'
-                                                            details = 'Skipped - $0 invoice'
-                                                            invoice_number = 'Skipped'
-                                                            with log_container:
-                                                                st.info(f"ℹ️ Skipping {clean_customer} - $0 invoice")
-                                                            results.append({
-                                                                'Customer': clean_customer,
-                                                                'Status': status,
-                                                                'Details': details,
-                                                                'Xero Invoice': invoice_number
-                                                            })
-                                                            continue
-                                                        
-                                                        # Generate line items for The Service Company
-                                                        line_items = []
-                                                        
-                                                        # Base fee line item
-                                                        line_items.append({
-                                                            "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
-                                                            "Quantity": 1.0,
-                                                            "UnitAmount": service_results['base_fee'],
-                                                            "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                                            "TaxType": "OUTPUT2"
-                                                        })
-                                                        
-                                                        # Add regular number details if they exist
-                                                        if service_results['regular_number']['calls']:
-                                                            regular_desc = ['6492003366']
-                                                            for call in service_results['regular_number']['calls']:
-                                                                regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
-                                                            
-                                                            line_items.append({
-                                                                "Description": '\n'.join(regular_desc),
-                                                                "Quantity": 1.0,
-                                                                "UnitAmount": service_results['regular_number']['total'],
-                                                                "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                                                "TaxType": "OUTPUT2"
-                                                            })
-                                                        
-                                                        # Add toll free number details
-                                                        for number, data in service_results['numbers'].items():
-                                                            if data['calls']:
-                                                                number_desc = [number]
-                                                                for call in data['calls']:
-                                                                    number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
-                                                                
-                                                                line_items.append({
-                                                                    "Description": '\n'.join(number_desc),
-                                                                    "Quantity": 1.0,
-                                                                    "UnitAmount": data['total'],
-                                                                    "AccountCode": devoli_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                                                                    "TaxType": "OUTPUT2"
-                                                                })
-                                                        
-                                                        # Create Xero invoice with parameters
-                                                        xero_invoice = devoli_processor.create_xero_invoice(
-                                                            clean_customer,
-                                                            service_df,
-                                                            invoice_params={
-                                                                'date': invoice_date.strftime('%Y-%m-%d'),
-                                                                'due_date': due_date.strftime('%Y-%m-%d'),
-                                                                'status': 'DRAFT',
-                                                                'type': 'ACCREC',
-                                                                'line_amount_types': 'Exclusive',
-                                                                'reference': reference,
-                                                                'line_items': line_items  # Pass the calculated line items here
-                                                            }
-                                                        )
-                                                        status = 'Success'
-                                                        details = f"Total amount: ${total_amount:,.2f}"
-                                                    else:
-                                                        totals = calculate_customer_totals(customer_data)
-                                                        
-                                                        # Format invoice description
-                                                        invoice_desc = service_processor.format_call_description(service_processor.parse_call_data(customer_data))
-                                                        max_length = 3900
-                                                        if len(invoice_desc) > max_length:
-                                                            invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
-                                                        
-                                                        # Create Xero invoice with parameters
-                                                        xero_invoice = devoli_processor.create_xero_invoice(
-                                                            clean_customer,
-                                                            customer_data,
-                                                            invoice_params={
-                                                                'date': invoice_date.strftime('%Y-%m-%d'),
-                                                                'due_date': due_date.strftime('%Y-%m-%d'),
-                                                                'status': 'DRAFT',
-                                                                'type': 'ACCREC',
-                                                                'line_amount_types': 'Exclusive',
-                                                                'reference': reference,
-                                                                'description': invoice_desc,
-                                                                'line_amount': totals['calling_charges']
-                                                            }
-                                                        )
-                                                        status = 'Success'
-                                                        details = f"Calling charges: ${totals['calling_charges']:,.2f}"
-                                                        
-                                                        # Add discount line for SPARK customers
-                                                        if 'SPARK' in clean_customer.upper():
-                                                            discount_amount = totals['calling_charges'] * 0.06
-                                                            devoli_processor.add_line_item(
-                                                                xero_invoice,
-                                                                {
-                                                                    "Description": "Spark Discount Taken",
-                                                                    "Quantity": totals['calling_charges'],
-                                                                    "UnitAmount": -0.06,  # Negative to represent discount
-                                                                    "AccountCode": "45900",  # SPARK Sales account
-                                                                    "TaxType": "OUTPUT2"  # 15% GST
-                                                                }
-                                                            )
-                                                        
-                                                        # Log the invoice number for debugging
-                                                        with log_container:
-                                                            if isinstance(xero_invoice, dict):
-                                                                if 'Invoices' in xero_invoice and xero_invoice['Invoices']:
-                                                                    invoice_num = xero_invoice['Invoices'][0].get('InvoiceNumber')
-                                                                    if invoice_num:
-                                                                        st.success(f"✅ Created Xero invoice #{invoice_num}")
-                                                                    else:
-                                                                        st.warning("⚠️ Invoice created but no number returned")
-                                                                else:
-                                                                    st.warning("⚠️ Invoice created but unexpected response format")
-                                                            else:
-                                                                st.warning("⚠️ Invoice created but response is not in expected format")
-                                                except Exception as xe:
-                                                    status = 'Failed'
-                                                    details = f"Xero Error: {str(xe)}"
-                                                    xero_invoice = None
-                                                    with log_container:
-                                                        st.error(f"❌ Error creating invoice for {clean_customer}: {str(xe)}")
-                                            else:
-                                                # Just analyze the data without creating Xero invoice
-                                                if clean_customer.strip().lower() == 'the service company':
-                                                    service_df = df[df['Customer Name'].str.strip() == 'The Service Company']
-                                                    service_results = service_processor.process_billing(service_df)
-                                                    total_amount = service_results['base_fee'] + service_results['regular_number']['total'] + sum(data['total'] for data in service_results['numbers'].values())
-                                                    status = 'Analyzed'
-                                                    details = f"Total amount: ${total_amount:,.2f}"
-                                                else:
-                                                    totals = calculate_customer_totals(customer_data)
-                                                    status = 'Analyzed'
-                                                    details = f"Calling charges: ${totals['calling_charges']:,.2f}"
-                                                
-                                                with log_container:
-                                                    st.success(f"✅ Analysis complete for {clean_customer}")
-                                            
-                                            # Add invoice number to results with better handling
-                                            invoice_number = '-'
-                                            if isinstance(xero_invoice, dict):
-                                                # Try to get invoice number from nested structure first
-                                                if 'Invoices' in xero_invoice and xero_invoice['Invoices']:
-                                                    invoice_number = xero_invoice['Invoices'][0].get('InvoiceNumber', '-')
-                                                # Fallback to direct access
-                                                elif 'InvoiceNumber' in xero_invoice:
-                                                    invoice_number = xero_invoice['InvoiceNumber']
-                                            
-                                            results.append({
-                                                'Customer': clean_customer,
-                                                'Status': status,
-                                                'Details': details,
-                                                'Xero Invoice': invoice_number
-                                            })
-                                            
-                                        except Exception as e:
-                                            with log_container:
-                                                st.error(f"❌ System error processing {clean_customer}: {str(e)}")
-                                            results.append({
-                                                'Customer': clean_customer,
-                                                'Status': 'Error',
-                                                'Details': f"System Error: {str(e)}",
-                                                'Xero Invoice': '-'
-                                            })
-                                
-                                # Clear progress indicators
-                                progress_bar.empty()
-                                progress_text.empty()
-                                
-                                # Show final results in a clean table
-                                with results_container:
-                                    st.subheader("📊 Processing Summary")
-                                    results_df = pd.DataFrame(results)
-                                    
-                                    # Count statuses
-                                    status_counts = results_df['Status'].value_counts()
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    
-                                    with col1:
-                                        st.metric("Total", len(results))
-                                    with col2:
-                                        if st.session_state.xero_connected:
-                                            st.metric("Success", status_counts.get('Success', 0))
-                                        else:
-                                            st.metric("Analyzed", status_counts.get('Analyzed', 0))
-                                    with col3:
-                                        st.metric("Skipped", status_counts.get('Skipped', 0))
-                                    with col4:
-                                        st.metric("Failed", status_counts.get('Failed', 0) + status_counts.get('Error', 0))
-                                    
-                                    st.dataframe(
-                                        results_df,
-                                        column_config={
-                                            "Customer": "Company",
-                                            "Status": st.column_config.TextColumn(
-                                                "Status",
-                                                help="Processing status for each company"
-                                            ),
-                                            "Details": "Details",
-                                            "Xero Invoice": st.column_config.TextColumn(
-                                                "Xero Invoice #",
-                                                help="Xero invoice number if created"
-                                            )
-                                        },
-                                        hide_index=True
-                                    )
+                                # Update process_df to show as processed
+                                process_df.loc[process_df['Xero Name'] == xero_name, 'Already Processed'] = True
+                                process_df.loc[process_df['Xero Name'] == xero_name, 'Select'] = False
+                            
+                            # Update session state
+                            st.session_state.process_df = process_df
+                            
+                            # Force rerun to refresh the UI
+                            st.rerun()
                     else:
-                        st.warning("No companies ready to process. Please check mappings.")
+                        st.info("Select at least one company to process")
                 else:
-                    st.warning("No VoIP customers found in invoice.")
-                
+                    st.warning("No customers found with charges")
+                        
             except Exception as e:
                 st.error(f"Error processing invoice: {str(e)}")
-                st.code(traceback.format_exc())
-        else:
-            st.write("Please select an invoice to process")
+                traceback.print_exc()
     else:
-        st.error("No invoice found in bills directory")
+        st.error("No invoice files found. Place invoice CSV files in the bills directory.")
 
 def select_page():
     st.title("Select Companies to Process")
@@ -861,20 +465,20 @@ def confirm_page():
                 }
                 
                 # Create Xero invoice
-                result = processor.create_xero_invoice(company, company_data)
+                result = process_customer(company['name'], company_data)
                 
                 # Add to results
                 results.append({
-                    'Company': company,
-                    'Status': 'Success' if result else 'Failed',
+                    'Company': company['name'],
+                    'Status': 'Success' if result['success'] else 'Failed',
                     'DDI Charges': len(company_data['ddi_charges']),
                     'Has Calling Charges': bool(company_data['calling_charges']),
-                    'Details': str(result) if result else 'Failed to create invoice'
+                    'Details': result['message']
                 })
                 
             except Exception as e:
                 results.append({
-                    'Company': company,
+                    'Company': company['name'],
                     'Status': 'Error',
                     'DDI Charges': 0,
                     'Has Calling Charges': False,
@@ -903,65 +507,263 @@ def confirm_page():
         st.error(f"Error initializing processor: {str(e)}")
         st.code(traceback.format_exc())
 
-def process_customer(customer_name, billing_data):
-    """Process a single customer's billing data"""
-    # Handle trailing spaces in customer names consistently
-    billing_data['Customer Name'] = billing_data['Customer Name'].str.strip()
-    customer_name = customer_name.strip()
-    customer_data = billing_data[billing_data['Customer Name'] == customer_name]
-    
-    # Process TFree numbers consistently
-    tfree_numbers = customer_data[customer_data['Short Description'].str.startswith('64800', na=False)]['Short Description'].unique()
-    
-    # Rest of processing...
-
-def process_selected_companies(selected_companies, df):
-    """Process selected companies and create invoices"""
-    results = []
-    
-    for company in selected_companies:
-        try:
-            # Calculate totals first
-            company_df = df[df['Customer Name'] == company]
-            calculated_results = calculate_customer_totals(df, company)
+def process_customer(customer_name, customer_data):
+    """Process a single customer and create Xero invoice"""
+    try:
+        # Get billing processor
+        billing_processor = st.session_state.billing_processor
+        
+        # Calculate totals
+        totals = calculate_customer_totals(customer_data)
+        
+        # Format dates for invoice based on the first date in the data
+        # Extract first date from customer_data
+        first_date = pd.to_datetime(customer_data['Date'].iloc[0]) if 'Date' in customer_data.columns else datetime.datetime.now()
+        
+        # Add 2 months to get the invoice month, then get last day of that month
+        next_month_date = first_date + pd.DateOffset(months=2)
+        # Get the last day of the month
+        invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
+        
+        # Due date is 20 days after invoice date
+        due_date = invoice_date + pd.Timedelta(days=20)
+        
+        # Set reference
+        reference = "Devoli Calling Charges"
+        
+        # Check if this is The Service Company
+        is_service_company = customer_name.lower() == 'the service company'
+        
+        # Create invoice
+        if is_service_company:
+            # Use special processing for The Service Company
+            service_processor = st.session_state.service_processor
+            service_results = service_processor.process_billing(customer_data)
             
-            # Create invoice with pre-calculated results
-            invoice_params = {
-                'pre_calculated_results': calculated_results,  # Pass the results
-                'date': df['Date'].iloc[0],
-                'due_date': (pd.to_datetime(df['Date'].iloc[0]) + pd.Timedelta(days=14)).strftime('%Y-%m-%d')
-            }
+            # Generate line items
+            line_items = []
             
-            invoice = st.session_state.billing_processor.create_xero_invoice(
-                company, 
-                company_df,
-                invoice_params=invoice_params
-            )
-            
-            if invoice:
-                invoice_number = invoice.get('Invoices', [{}])[0].get('InvoiceNumber', 'Created')
-                results.append({
-                    'customer': company,
-                    'status': 'Success',
-                    'details': 'Invoice created successfully',
-                    'invoice_number': invoice_number
-                })
-            else:
-                results.append({
-                    'customer': company,
-                    'status': 'Failed',
-                    'details': 'No invoice response received',
-                    'invoice_number': 'N/A'
-                })
-                
-        except Exception as e:
-            results.append({
-                'customer': company,
-                'status': 'Failed',
-                'details': str(e),
-                'invoice_number': 'N/A'
+            # Base fee line item
+            line_items.append({
+                "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
+                "Quantity": 1.0,
+                "UnitAmount": service_results['base_fee'],
+                "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                "TaxType": "OUTPUT2"
             })
             
+            # Add regular number details if they exist
+            if service_results['regular_number']['calls']:
+                regular_desc = ['6492003366']
+                for call in service_results['regular_number']['calls']:
+                    regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
+                
+                line_items.append({
+                    "Description": '\n'.join(regular_desc),
+                    "Quantity": 1.0,
+                    "UnitAmount": service_results['regular_number']['total'],
+                    "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                    "TaxType": "OUTPUT2"
+                })
+            
+            # Add toll free number details
+            for number, data in service_results['numbers'].items():
+                if data['calls']:
+                    number_desc = [number]
+                    for call in data['calls']:
+                        number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+                    
+                    line_items.append({
+                        "Description": '\n'.join(number_desc),
+                        "Quantity": 1.0,
+                        "UnitAmount": data['total'],
+                        "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                        "TaxType": "OUTPUT2"
+                    })
+            
+            # Create Xero invoice
+            xero_invoice = billing_processor.create_xero_invoice(
+                customer_name,
+                customer_data,
+                invoice_params={
+                    'date': invoice_date.strftime('%Y-%m-%d'),
+                    'due_date': due_date.strftime('%Y-%m-%d'),
+                    'status': 'DRAFT',
+                    'type': 'ACCREC',
+                    'line_amount_types': 'Exclusive',
+                    'reference': reference,
+                    'line_items': line_items
+                }
+            )
+        else:
+            # Standard customer processing
+            # Format invoice description
+            invoice_desc = st.session_state.service_processor.format_call_description(
+                st.session_state.service_processor.parse_call_data(customer_data)
+            )
+            
+            # Truncate if too long for Xero
+            max_length = 3900
+            if len(invoice_desc) > max_length:
+                invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
+            
+            # Create Xero invoice with parameters
+            xero_invoice = billing_processor.create_xero_invoice(
+                customer_name,
+                customer_data,
+                invoice_params={
+                    'date': invoice_date.strftime('%Y-%m-%d'),
+                    'due_date': due_date.strftime('%Y-%m-%d'),
+                    'status': 'DRAFT',
+                    'type': 'ACCREC',
+                    'line_amount_types': 'Exclusive',
+                    'reference': reference,
+                    'description': invoice_desc,
+                    'line_amount': totals['calling_charges']
+                }
+            )
+            
+            # Add discount line for SPARK customers
+            if 'SPARK' in customer_name.upper():
+                discount_amount = totals['calling_charges'] * 0.06
+                billing_processor.add_line_item(
+                    xero_invoice,
+                    {
+                        "Description": "Spark Discount Taken",
+                        "Quantity": totals['calling_charges'],
+                        "UnitAmount": -0.06,  # Negative to represent discount
+                        "AccountCode": "45900",  # SPARK Sales account
+                        "TaxType": "OUTPUT2"  # 15% GST
+                    }
+                )
+        
+        # Check for successful invoice creation
+        if not xero_invoice:
+            return {
+                'success': False,
+                'name': customer_name,
+                'message': "No invoice response received"
+            }
+        
+        # Extract invoice number
+        invoice_number = None
+        if isinstance(xero_invoice, dict):
+            if 'Invoices' in xero_invoice and xero_invoice['Invoices']:
+                invoice_number = xero_invoice['Invoices'][0].get('InvoiceNumber', 'Created')
+            elif 'InvoiceNumber' in xero_invoice:
+                invoice_number = xero_invoice['InvoiceNumber']
+        
+        return {
+            'success': True,
+            'name': customer_name,
+            'message': f"Invoice {invoice_number} created successfully",
+            'invoice_number': invoice_number
+        }
+        
+    except Exception as e:
+        # Return error
+        return {
+            'success': False,
+            'name': customer_name,
+            'message': f"Error: {str(e)}"
+        }
+
+def process_selected_companies(selected_companies, df):
+    """Process selected companies to Xero"""
+    results = []
+    billing_processor = st.session_state.billing_processor
+    
+    # Create a progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Show completion message at end of processing
+    success_count = 0
+    error_count = 0
+    
+    # Create a container to show real-time updates
+    log_container = st.container()
+    
+    # Ensure log database is initialized
+    log_db = st.session_state.log_db
+    file_log_id = st.session_state.current_file_log_id
+    
+    for i, company in enumerate(selected_companies):
+        # Update progress
+        progress = (i + 1) / len(selected_companies)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {i+1} of {len(selected_companies)}: {company['name']}")
+        
+        try:
+            # Check if already processed in this session
+            if company.get('processed'):
+                with log_container:
+                    st.info(f"Skipping {company['name']} - already processed in this session")
+                continue
+                
+            # Check if already processed in database
+            invoice_file = os.path.basename(df.name) if hasattr(df, 'name') else "unknown_file.csv"
+            if log_db.check_if_processed(invoice_file, company['name']):
+                with log_container:
+                    st.info(f"Skipping {company['name']} - already processed previously")
+                continue
+                
+            # Process the company
+            with log_container:
+                st.text(f"Creating invoice for {company['name']}...")
+            
+            # Get customer data
+            customer_data = company['data']
+            
+            # Process the customer using billing_processor
+            result = process_customer(company['name'], customer_data)
+            
+            if result['success']:
+                success_count += 1
+                # Mark as processed
+                company['processed'] = True
+                
+                # Log invoice creation
+                log_db.log_invoice_creation(
+                    file_log_id,
+                    company['name'], 
+                    company.get('devoli_names', ''),
+                    result.get('invoice_number', ''),
+                    float(company['total'].replace('$', ''))
+                )
+                
+                with log_container:
+                    st.success(f"✅ {company['name']}: {result['message']}")
+            else:
+                error_count += 1
+                with log_container:
+                    st.error(f"❌ {company['name']}: {result['message']}")
+            
+            results.append(result)
+            
+        except Exception as e:
+            # Handle errors
+            error_count += 1
+            error_msg = str(e)
+            traceback.print_exc()
+            results.append({
+                'success': False,
+                'name': company['name'],
+                'message': f"Error: {error_msg}"
+            })
+            with log_container:
+                st.error(f"❌ Error processing {company['name']}: {error_msg}")
+    
+    # Complete progress and show final status
+    progress_bar.progress(1.0)
+    status_text.text("Processing complete!")
+    
+    # Show summary
+    st.subheader("Processing Summary")
+    st.write(f"Successfully processed: {success_count} invoices")
+    if error_count > 0:
+        st.write(f"Errors: {error_count} invoices")
+    
     return results
 
 def main():
@@ -1041,15 +843,55 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Updated navigation
-    page = st.sidebar.radio("Select Page", ["Process Invoices", "Product Analysis", "Customer Mapping"])
-    
-    if page == "Customer Mapping":
-        mapping_page()
-    elif page == "Process Invoices":
+    # Create sidebar for navigation
+    with st.sidebar:
+        st.title("Navigation")
+        # Show invoice count from database if available
+        if 'log_db' in st.session_state:
+            invoices_df = st.session_state.log_db.get_created_invoices()
+            if not invoices_df.empty:
+                st.caption(f"Total invoices: {len(invoices_df)}")
+        
+        if st.button("Home"):
+            navigate_to('home')
+        if st.button("Process Invoice"):
+            navigate_to('process') 
+        if st.button("Customer Mapping"):
+            navigate_to('mapping')
+        if st.button("Product Analysis"):
+            navigate_to('product_analysis')
+        if st.button("Invoice History"):
+            navigate_to('history')
+            
+        # Show Xero connection status
+        if 'xero_connected' in st.session_state and st.session_state.xero_connected:
+            st.sidebar.success("✅ Xero Connected")
+        else:
+            st.sidebar.warning("⚠️ Xero Not Connected")
+            if st.sidebar.button("Connect to Xero"):
+                try:
+                    # Try to connect to Xero
+                    processor = st.session_state.billing_processor
+                    st.session_state.xero_connected = processor.ensure_xero_connection(force_refresh=True)
+                    st.rerun()
+                except Exception as e:
+                    st.sidebar.error(f"Error connecting to Xero: {str(e)}")
+
+    # Display the selected page
+    if st.session_state.page == 'home':
+        home_page()
+    elif st.session_state.page == 'process':
         process_page()
-    else:
+    elif st.session_state.page == 'select':
+        select_page()
+    elif st.session_state.page == 'confirm':
+        confirm_page()
+    elif st.session_state.page == 'mapping':
+        mapping_page()
+    elif st.session_state.page == 'product_analysis':
         product_analysis_page()
+    elif st.session_state.page == 'history':
+        log_history_page()
 
 if __name__ == "__main__":
     main()

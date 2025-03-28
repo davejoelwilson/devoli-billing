@@ -61,4 +61,4 @@ xero_tokens.json
 htmlcov/
 test-reports/
 test_*.py
-!test_requirements.txt 
+!test_requirements.txt data/*.db

@@ -989,47 +989,87 @@ class DevoliBilling:
         # Rest of the processing...
 
     def add_line_item(self, invoice, line_item):
-        """Add a line item to an existing Xero invoice.
-        
-        Args:
-            invoice (dict): The Xero invoice response
-            line_item (dict): The line item to add with fields:
-                - Description
-                - Quantity
-                - UnitAmount
-                - AccountCode
-                - TaxType
-        """
-        if not invoice or 'Invoices' not in invoice or not invoice['Invoices']:
-            raise ValueError("Invalid invoice object")
-            
-        invoice_id = invoice['Invoices'][0]['InvoiceID']
-        
-        # Get the current invoice to update
-        url = f"{self.XERO_API_URL}/Invoices/{invoice_id}"
-        headers = self.token_manager.get_auth_headers()
-        
+        """Add a line item to an existing invoice"""
         try:
-            # Get current invoice
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            current_invoice = response.json()
+            # Make sure we have an invoice ID
+            if isinstance(invoice, dict) and 'Invoices' in invoice:
+                # Extract the first invoice ID
+                invoice_id = invoice['Invoices'][0]['InvoiceID']
+            elif isinstance(invoice, dict) and 'InvoiceID' in invoice:
+                # Use the invoice ID directly if provided
+                invoice_id = invoice['InvoiceID']
+            else:
+                print("Error: Invalid invoice format, cannot add line item")
+                return None
             
-            # Add new line item
-            if 'LineItems' not in current_invoice['Invoices'][0]:
-                current_invoice['Invoices'][0]['LineItems'] = []
+            # Set up request
+            headers = self.token_manager.get_auth_headers()
+            headers['Accept'] = 'application/json'
+            headers['Content-Type'] = 'application/json'
             
-            current_invoice['Invoices'][0]['LineItems'].append(line_item)
+            # Get the current invoice first
+            get_url = f"{self.XERO_API_URL}/Invoices/{invoice_id}"
+            get_response = requests.get(
+                get_url,
+                headers=headers
+            )
             
-            # Update invoice
-            response = requests.post(url, headers=headers, json=current_invoice)
-            response.raise_for_status()
+            # Check if get request was successful
+            if get_response.status_code != 200:
+                print(f"Error getting invoice details: {get_response.status_code} - {get_response.text}")
+                return None
             
-            return response.json()
+            try:
+                current_invoice = get_response.json()
+            except Exception as e:
+                print(f"Error parsing invoice JSON: {str(e)}")
+                # Try to continue with a minimal invoice structure
+                current_invoice = {"Invoices": [{"InvoiceID": invoice_id, "LineItems": []}]}
             
-        except requests.exceptions.RequestException as e:
+            # Get the line items array
+            if 'Invoices' in current_invoice and len(current_invoice['Invoices']) > 0:
+                line_items = current_invoice['Invoices'][0].get('LineItems', [])
+                line_items.append(line_item)
+                
+                # Create update payload
+                update_payload = {
+                    "Invoices": [
+                        {
+                            "InvoiceID": invoice_id,
+                            "LineItems": line_items
+                        }
+                    ]
+                }
+                
+                # Send the update
+                response = requests.put(
+                    get_url,
+                    headers=headers,
+                    json=update_payload
+                )
+                
+                # Check response
+                if response.status_code in [200, 201, 202]:
+                    try:
+                        return response.json()
+                    except Exception as json_error:
+                        print(f"Error decoding JSON response: {str(json_error)}")
+                        print(f"Response status code: {response.status_code}")
+                        print(f"Response text: {response.text}")
+                        # Return success anyway if status code is good
+                        if response.status_code in [200, 201, 202]:
+                            return {"success": True, "message": "Line item added but response could not be parsed"}
+                else:
+                    print(f"Error adding line item to invoice: {response.status_code} - {response.text}")
+                    return None
+            else:
+                print("Error: Could not find invoice in response")
+                return None
+        except Exception as e:
             print(f"Error adding line item to invoice: {str(e)}")
-            raise
+            import traceback
+            traceback.print_exc()
+            return None
 
 def main():
     st.set_page_config(page_title="Devoli Billing", layout="wide")

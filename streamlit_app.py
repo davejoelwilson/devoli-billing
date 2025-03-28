@@ -638,17 +638,24 @@ def process_customer(customer_name, customer_data):
             
             # Add discount line for SPARK customers
             if 'SPARK' in customer_name.upper():
-                discount_amount = totals['calling_charges'] * 0.06
-                billing_processor.add_line_item(
-                    xero_invoice,
-                    {
-                        "Description": "Spark Discount Taken",
-                        "Quantity": totals['calling_charges'],
-                        "UnitAmount": -0.06,  # Negative to represent discount
-                        "AccountCode": "45900",  # SPARK Sales account
-                        "TaxType": "OUTPUT2"  # 15% GST
-                    }
-                )
+                try:
+                    discount_amount = totals['calling_charges'] * 0.06
+                    discount_result = billing_processor.add_line_item(
+                        xero_invoice,
+                        {
+                            "Description": "Spark Discount Taken",
+                            "Quantity": totals['calling_charges'],
+                            "UnitAmount": -0.06,  # Negative to represent discount
+                            "AccountCode": "45900",  # SPARK Sales account
+                            "TaxType": "OUTPUT2"  # 15% GST
+                        }
+                    )
+                    if not discount_result:
+                        st.warning(f"SPARK discount could not be applied for {customer_name}, but invoice was created.")
+                except Exception as discount_error:
+                    st.warning(f"Error applying SPARK discount: {str(discount_error)}")
+                    # Continue processing even if discount fails
+                    traceback.print_exc()
         
         # Check for successful invoice creation
         if not xero_invoice:

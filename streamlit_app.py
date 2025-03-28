@@ -610,33 +610,8 @@ def process_customer(customer_name, customer_data):
             )
         else:
             # Standard customer processing
-            # Format invoice description
-            invoice_desc = st.session_state.service_processor.format_call_description(
-                st.session_state.service_processor.parse_call_data(customer_data)
-            )
-            
-            # Truncate if too long for Xero
-            max_length = 3900
-            if len(invoice_desc) > max_length:
-                invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
-            
-            # Create Xero invoice with parameters
-            xero_invoice = billing_processor.create_xero_invoice(
-                customer_name,
-                customer_data,
-                invoice_params={
-                    'date': invoice_date.strftime('%Y-%m-%d'),
-                    'due_date': due_date.strftime('%Y-%m-%d'),
-                    'status': 'DRAFT',
-                    'type': 'ACCREC',
-                    'line_amount_types': 'Exclusive',
-                    'reference': reference,
-                    'description': invoice_desc,
-                    'line_amount': totals['calling_charges']
-                }
-            )
-            
-            # Add discount line for SPARK customers
+            # Calculate SPARK discount first if applicable
+            spark_discount_line = None
             if 'SPARK' in customer_name.upper():
                 try:
                     # Calculate the discount amount (6% of calling charges)
@@ -647,28 +622,60 @@ def process_customer(customer_name, customer_data):
                         st.info(f"Applying SPARK discount of ${discount_amount:.2f} to invoice for {customer_name}")
                         
                         # Create the discount line item
-                        discount_line = {
+                        spark_discount_line = {
                             "Description": "SPARK 6% Discount",
                             "Quantity": 1.0,
                             "UnitAmount": -discount_amount,  # Negative for a discount
                             "AccountCode": "45900",  # SPARK Sales account
                             "TaxType": "OUTPUT2"  # 15% GST
                         }
-                        
-                        # Add the discount line to the invoice
-                        discount_result = billing_processor.add_line_item(
-                            xero_invoice,
-                            discount_line
-                        )
-                        
-                        if not discount_result:
-                            st.warning(f"SPARK discount could not be applied for {customer_name}, but invoice was created.")
                     else:
                         st.info(f"No SPARK discount applied for {customer_name} (amount would be $0)")
                 except Exception as discount_error:
-                    st.warning(f"SPARK discount could not be applied for {customer_name}, but invoice was created.")
-                    print(f"Error applying SPARK discount: {str(discount_error)}")
+                    st.warning(f"Error calculating SPARK discount: {str(discount_error)}")
+                    print(f"Error calculating SPARK discount: {str(discount_error)}")
                     traceback.print_exc()
+                    
+            # Format invoice description
+            invoice_desc = st.session_state.service_processor.format_call_description(
+                st.session_state.service_processor.parse_call_data(customer_data)
+            )
+            
+            # Truncate if too long for Xero
+            max_length = 3900
+            if len(invoice_desc) > max_length:
+                invoice_desc = invoice_desc[:max_length] + "\n... (truncated)"
+            
+            # Create line items array
+            line_items = []
+            
+            # Main calling charges line item
+            line_items.append({
+                "Description": invoice_desc,
+                "Quantity": 1.0,
+                "UnitAmount": float(totals['calling_charges']),
+                "AccountCode": "43850",
+                "TaxType": "OUTPUT2"
+            })
+            
+            # Add SPARK discount line if applicable
+            if spark_discount_line:
+                line_items.append(spark_discount_line)
+            
+            # Create Xero invoice with parameters and all line items
+            xero_invoice = billing_processor.create_xero_invoice(
+                customer_name,
+                customer_data,
+                invoice_params={
+                    'date': invoice_date.strftime('%Y-%m-%d'),
+                    'due_date': due_date.strftime('%Y-%m-%d'),
+                    'status': 'DRAFT',
+                    'type': 'ACCREC',
+                    'line_amount_types': 'Exclusive',
+                    'reference': reference,
+                    'line_items': line_items
+                }
+            )
         
         # Check for successful invoice creation
         if not xero_invoice:

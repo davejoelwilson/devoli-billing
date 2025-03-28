@@ -11,6 +11,7 @@ from product_analysis import product_analysis_page
 from log_database import LogDatabase
 from log_history_page import log_history_page
 import datetime
+import json
 
 def init_session_state():
     """Initialize session state variables"""
@@ -370,17 +371,27 @@ def process_page():
                         # Show success message
                         st.success(f"Successfully processed {len(results)} companies")
                         
-                        # Mark processed items in the database
-                        for company in selected_companies:
-                            st.session_state.log_db.mark_invoice_as_processed(
-                                company['name'], 
-                                invoice_filename
-                            )
+                        # Keep track of successfully processed companies
+                        processed_companies = []
                         
-                        # Mark items as processed in our display logic
-                        for i in st.session_state.selected_indexes:
-                            if i < len(process_data):
+                        # Mark processed items in the database only if they were successful
+                        for company, result in zip(selected_companies, results):
+                            if result['success'] and result.get('invoice_number') and result['invoice_number'] != 'Unknown':
+                                st.session_state.log_db.mark_invoice_as_processed(
+                                    company['name'], 
+                                    invoice_filename
+                                )
+                                processed_companies.append(company['name'])
+                        
+                        # Mark items as processed in our display logic only if they were successful
+                        # and permanently store in session state
+                        for i in range(len(process_data)):
+                            item = process_data[i]
+                            if item['Xero Name'] in processed_companies:
                                 process_data[i]['Already Processed'] = True
+                                
+                        # Update session state with processed data
+                        st.session_state.process_data = process_data
                         
                         # Clear selections after processing
                         st.session_state.selected_indexes = set()
@@ -711,9 +722,22 @@ def process_customer(customer_name, customer_data):
         invoice_number = None
         if isinstance(xero_invoice, dict):
             if 'Invoices' in xero_invoice and xero_invoice['Invoices']:
-                invoice_number = xero_invoice['Invoices'][0].get('InvoiceNumber', 'Created')
+                invoice_number = xero_invoice['Invoices'][0].get('InvoiceNumber')
+                if not invoice_number:
+                    # Try alternate fields
+                    invoice_number = xero_invoice['Invoices'][0].get('InvoiceID', 'Unknown')
             elif 'InvoiceNumber' in xero_invoice:
                 invoice_number = xero_invoice['InvoiceNumber']
+            elif 'InvoiceID' in xero_invoice:
+                invoice_number = xero_invoice['InvoiceID']
+            
+            # Add debug logging
+            print(f"Extracted invoice number: {invoice_number}")
+            print(f"Invoice response structure: {json.dumps(xero_invoice, indent=2)[:500]}")  # First 500 chars
+        
+        if not invoice_number:
+            print("Warning: Could not extract invoice number from response")
+            invoice_number = 'Unknown'
         
         return {
             'success': True,
@@ -797,7 +821,7 @@ def process_selected_companies(selected_companies, df):
             # Process the customer using billing_processor
             result = process_customer(company['name'], customer_data)
             
-            if result['success']:
+            if result['success'] and result.get('invoice_number') and result['invoice_number'] != 'Unknown':
                 success_count += 1
                 # Mark as processed
                 company['processed'] = True
@@ -811,24 +835,31 @@ def process_selected_companies(selected_companies, df):
                         st.warning(f"Could not parse total amount: {company['total']}")
                     total_amount = 0
                 
-                # Log invoice creation - make sure it actually gets logged
+                # Log invoice creation with proper invoice number
                 try:
                     invoice_creation_id = log_db.log_invoice_creation(
                         file_log_id,
                         company['name'], 
                         company.get('devoli_names', ''),
-                        result.get('invoice_number', ''),
+                        result['invoice_number'],  # Use the invoice number from result
                         total_amount
                     )
                     with log_container:
-                        st.success(f"✅ {company['name']}: {result['message']} - Logged: ID {invoice_creation_id}")
+                        st.success(f"✅ {company['name']}: Invoice {result['invoice_number']} created successfully - Logged: ID {invoice_creation_id}")
+                        
+                    # Also mark the invoice as processed in the database
+                    log_db.mark_invoice_as_processed(company['name'], invoice_file)
                 except Exception as log_error:
                     with log_container:
                         st.error(f"⚠️ Invoice created but logging failed: {str(log_error)}")
+                    # If logging fails, don't mark as processed
+                    company['processed'] = False
             else:
                 error_count += 1
                 with log_container:
                     st.error(f"❌ {company['name']}: {result['message']}")
+                # Don't mark as processed if invoice creation failed or no invoice number
+                company['processed'] = False
             
             results.append(result)
             
@@ -844,6 +875,8 @@ def process_selected_companies(selected_companies, df):
             })
             with log_container:
                 st.error(f"❌ Error processing {company['name']}: {error_msg}")
+            # Don't mark as processed if there was an error
+            company['processed'] = False
     
     # Complete progress and show final status
     progress_bar.progress(1.0)

@@ -232,30 +232,9 @@ class LogDatabase:
                     # If status is 'processed', it's been processed already
                     return invoice_record[0] == 'processed'
                 
-                # If not found, check if we have the file at least
-                cursor.execute('''
-                SELECT id FROM file_processing WHERE filename = ?
-                ''', (filename,))
+                # If not found, return False (not processed)
+                return False
                 
-                file_record = cursor.fetchone()
-                if not file_record:
-                    # No file record, definitely not processed
-                    return False
-                    
-                # Finally, check if we have any invoice for this customer (regardless of file)
-                cursor.execute('''
-                SELECT status FROM invoice_creation 
-                WHERE xero_customer_name = ?
-                ''', (xero_customer_name,))
-                
-                invoice_record = cursor.fetchone()
-                if not invoice_record:
-                    return False
-                
-                # This is a fallback - if we found any record at all for this customer
-                # Return true only if it's specifically marked as processed
-                return invoice_record[0] == 'processed'
-            
             except Exception as e:
                 print(f"Database error in check_if_processed: {str(e)}")
                 traceback.print_exc()

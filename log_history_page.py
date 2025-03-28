@@ -163,13 +163,12 @@ def log_history_page():
                     if st.button("Update Notes"):
                         try:
                             # Update note in database
-                            cursor = db.conn.cursor()
-                            cursor.execute('''
-                            UPDATE file_processing SET user_notes = ? WHERE id = ?
-                            ''', (new_note, file_id))
-                            db.conn.commit()
-                            st.success(f"Notes updated for {selected_file}")
-                            st.rerun()
+                            result = db.update_file_note(file_id, new_note)
+                            if result:
+                                st.success(f"Notes updated for {selected_file}")
+                                st.rerun()
+                            else:
+                                st.error("Failed to update notes")
                         except Exception as e:
                             st.error(f"Error updating notes: {str(e)}")
                 except Exception as e:

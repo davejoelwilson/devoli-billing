@@ -428,13 +428,14 @@ class DevoliBilling:
                 raise ValueError(f"Contact '{xero_name}' not found in Xero")
             
             # Create the invoice
+            invoice_date = invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))
             invoice_data = {
                 "Type": invoice_params.get('type', 'ACCREC'),
                 "Contact": xero_contact,
                 "LineItems": line_items,
-                "Date": invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d'))),
-                "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
-                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {(pd.to_datetime(invoice_params.get('date')) + pd.DateOffset(months=1)).strftime('%B %Y')}"),
+                "Date": invoice_date,
+                "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_date) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
+                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }
             

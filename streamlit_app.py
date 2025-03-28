@@ -522,6 +522,18 @@ def process_customer(customer_name, customer_data):
         try:
             if 'Date' in customer_data.columns:
                 first_date = pd.to_datetime(customer_data['Date'].iloc[0])
+            elif 'description' in customer_data.columns.str.lower():
+                # Try to extract date from description which might contain a date range
+                desc_col = customer_data.columns[customer_data.columns.str.lower() == 'description'][0]
+                first_desc = customer_data[desc_col].iloc[0]
+                
+                # Look for date ranges in format (dd/mm/yyyy - dd/mm/yyyy)
+                date_match = re.search(r'\((\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})\)', first_desc)
+                if date_match:
+                    # Use the end date of the range (second date)
+                    end_date_str = date_match.group(2)
+                    first_date = pd.to_datetime(end_date_str, format='%d/%m/%Y')
+                    print(f"Extracted end date from description: {first_date}")
             elif hasattr(customer_data, 'name'):
                 # Try to extract date from filename (e.g., Invoice_123456_2024-01-31.csv)
                 date_str = os.path.basename(customer_data.name).split('_')[2].split('.')[0]
@@ -533,10 +545,9 @@ def process_customer(customer_name, customer_data):
         if first_date is None:
             first_date = datetime.datetime.now()
             
-        # Add 2 months to get the invoice month, then get last day of that month
-        next_month_date = first_date + pd.DateOffset(months=2)
-        # Get the last day of the month
-        invoice_date = pd.to_datetime(f"{next_month_date.year}-{next_month_date.month + 1 if next_month_date.month < 12 else 1}-01") - pd.Timedelta(days=1)
+        # Set invoice date to the last day of the current month
+        today = datetime.datetime.now()
+        invoice_date = pd.to_datetime(f"{today.year}-{today.month + 1 if today.month < 12 else 1}-01") - pd.Timedelta(days=1)
         
         # Due date is 20 days after invoice date
         due_date = invoice_date + pd.Timedelta(days=20)

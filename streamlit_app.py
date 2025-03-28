@@ -342,12 +342,24 @@ def process_page():
                 for i in st.session_state.selected_indexes:
                     if i < len(process_data):
                         item = process_data[i]
-                        selected_companies.append({
-                            'name': item['Xero Name'],
-                            'devoli_names': item['Devoli Names'],
-                            'total': item['Total'],
-                            'data': item['customer_data']
-                        })
+                        # Skip items with $0 totals
+                        total_amount = 0
+                        try:
+                            # Remove $ sign and convert to float
+                            total_amount = float(item['Total'].replace('$', '').strip())
+                        except (ValueError, AttributeError):
+                            pass
+                                
+                        # Only add if total is greater than 0
+                        if total_amount > 0:
+                            selected_companies.append({
+                                'name': item['Xero Name'],
+                                'devoli_names': item['Devoli Names'],
+                                'total': item['Total'],
+                                'data': item['customer_data']
+                            })
+                        else:
+                            print(f"Skipping {item['Xero Name']} with $0 invoice amount")
                 
                 # Add a continue button
                 if selected_companies:

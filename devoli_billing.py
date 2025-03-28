@@ -344,7 +344,7 @@ class DevoliBilling:
                         "TaxType": "OUTPUT2"
                     })
             
-            # Skip if no charges
+            # Skip if no charges or if the total amount is $0
             if not line_items:
                 # Check if there's call data before skipping
                 call_mask = customer_data['description'].str.contains('Calls', case=False, na=False)
@@ -384,6 +384,14 @@ class DevoliBilling:
                 else:
                     print(f"ℹ️ Skipping {customer} - $0 invoice (no call data)")
                     return None
+                    
+            # Calculate total invoice amount
+            total_invoice_amount = sum(item.get("UnitAmount", 0) * item.get("Quantity", 1) for item in line_items)
+            
+            # Skip if total invoice amount is $0 or negative
+            if total_invoice_amount <= 0:
+                print(f"ℹ️ Skipping {customer} - ${total_invoice_amount} invoice amount (zero or negative total)")
+                return None
             
             # Find Xero contact - first check if the customer name is already a Xero name
             # This is the case when we get the customer name from the UI where it's already mapped

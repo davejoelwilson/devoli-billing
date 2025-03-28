@@ -282,21 +282,33 @@ def process_page():
                     # Display dataframe
                     st.write(f"Found {len(process_data)} customers with charges")
                     
+                    # Initialize the data editor key in session state if it doesn't exist
+                    if 'data_editor_key' not in st.session_state:
+                        st.session_state.data_editor_key = 0
+                    
+                    # Function to handle Select All
+                    def select_all_items():
+                        st.session_state.process_df['Select'] = ~st.session_state.process_df['Already Processed']
+                        # Increment the key to force a refresh of the data editor
+                        st.session_state.data_editor_key += 1
+                    
+                    # Function to handle Clear All
+                    def clear_all_items():
+                        st.session_state.process_df['Select'] = False
+                        # Increment the key to force a refresh of the data editor
+                        st.session_state.data_editor_key += 1
+                    
                     # Add Select All and Clear All buttons
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("Select All", key="select_all"):
-                            # Update process_df to select all rows that aren't already processed
-                            st.session_state.process_df['Select'] = ~st.session_state.process_df['Already Processed']
-                            st.rerun()
+                        st.button("Select All", key="select_all", on_click=select_all_items)
                     
                     with col2:
-                        if st.button("Clear All", key="clear_all"):
-                            # Update process_df to deselect all rows
-                            st.session_state.process_df['Select'] = False
-                            st.rerun()
+                        st.button("Clear All", key="clear_all", on_click=clear_all_items)
                     
                     # Create a dataframe with checkboxes using the data from session state
+                    # Use a dynamic key based on data_editor_key to force refresh
+                    editor_key = f"process_editor_{st.session_state.data_editor_key}"
                     edited_df = st.data_editor(
                         st.session_state.process_df,
                         column_config={
@@ -314,7 +326,7 @@ def process_page():
                         disabled=["Devoli Names", "Xero Name", "DDI Charges", "Calling Charges", "Total", "Already Processed"],
                         hide_index=True,
                         use_container_width=True,
-                        key="process_editor"
+                        key=editor_key
                     )
                     
                     # Update session state with any changes made in the editor

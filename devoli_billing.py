@@ -991,79 +991,71 @@ class DevoliBilling:
     def add_line_item(self, invoice, line_item):
         """Add a line item to an existing invoice"""
         try:
-            # Make sure we have an invoice ID
-            if isinstance(invoice, dict) and 'Invoices' in invoice:
-                # Extract the first invoice ID
-                invoice_id = invoice['Invoices'][0]['InvoiceID']
-            elif isinstance(invoice, dict) and 'InvoiceID' in invoice:
-                # Use the invoice ID directly if provided
-                invoice_id = invoice['InvoiceID']
+            # Better extraction of invoice ID with detailed logging
+            invoice_id = None
+            
+            # Handle various response formats
+            if isinstance(invoice, dict):
+                if 'Invoices' in invoice and invoice['Invoices'] and len(invoice['Invoices']) > 0:
+                    if 'InvoiceID' in invoice['Invoices'][0]:
+                        invoice_id = invoice['Invoices'][0]['InvoiceID']
+                    else:
+                        print("InvoiceID not found in Invoices[0], invoice structure:")
+                        print(json.dumps(invoice['Invoices'][0], indent=2))
+                elif 'InvoiceID' in invoice:
+                    invoice_id = invoice['InvoiceID']
+                else:
+                    print("Could not find InvoiceID in invoice structure:")
+                    print(json.dumps(invoice, indent=2)[:500])  # Print first 500 chars to avoid huge output
             else:
-                print("Error: Invalid invoice format, cannot add line item")
+                print(f"Invalid invoice type: {type(invoice)}")
+                print(f"Invoice value: {invoice}")
+            
+            if not invoice_id:
+                print("Failed to extract invoice ID, cannot add line item")
                 return None
+                
+            print(f"Adding line item to invoice ID: {invoice_id}")
             
             # Set up request
-            headers = self.token_manager.get_auth_headers()
+            headers = self.ensure_xero_connection()
             headers['Accept'] = 'application/json'
             headers['Content-Type'] = 'application/json'
             
-            # Get the current invoice first
-            get_url = f"{self.XERO_API_URL}/Invoices/{invoice_id}"
-            get_response = requests.get(
-                get_url,
-                headers=headers
+            # Create update payload directly without fetching first (simpler approach)
+            update_payload = {
+                "Invoices": [
+                    {
+                        "InvoiceID": invoice_id,
+                        "LineItems": [line_item]
+                    }
+                ]
+            }
+            
+            # Send the update
+            url = f"{self.XERO_API_URL}/Invoices/{invoice_id}"
+            print(f"Sending PUT request to: {url}")
+            
+            response = requests.put(
+                url,
+                headers=headers,
+                json=update_payload
             )
             
-            # Check if get request was successful
-            if get_response.status_code != 200:
-                print(f"Error getting invoice details: {get_response.status_code} - {get_response.text}")
-                return None
-            
-            try:
-                current_invoice = get_response.json()
-            except Exception as e:
-                print(f"Error parsing invoice JSON: {str(e)}")
-                # Try to continue with a minimal invoice structure
-                current_invoice = {"Invoices": [{"InvoiceID": invoice_id, "LineItems": []}]}
-            
-            # Get the line items array
-            if 'Invoices' in current_invoice and len(current_invoice['Invoices']) > 0:
-                line_items = current_invoice['Invoices'][0].get('LineItems', [])
-                line_items.append(line_item)
-                
-                # Create update payload
-                update_payload = {
-                    "Invoices": [
-                        {
-                            "InvoiceID": invoice_id,
-                            "LineItems": line_items
-                        }
-                    ]
-                }
-                
-                # Send the update
-                response = requests.put(
-                    get_url,
-                    headers=headers,
-                    json=update_payload
-                )
-                
-                # Check response
-                if response.status_code in [200, 201, 202]:
-                    try:
-                        return response.json()
-                    except Exception as json_error:
-                        print(f"Error decoding JSON response: {str(json_error)}")
-                        print(f"Response status code: {response.status_code}")
-                        print(f"Response text: {response.text}")
-                        # Return success anyway if status code is good
-                        if response.status_code in [200, 201, 202]:
-                            return {"success": True, "message": "Line item added but response could not be parsed"}
-                else:
-                    print(f"Error adding line item to invoice: {response.status_code} - {response.text}")
-                    return None
+            # Check response
+            if response.status_code in [200, 201, 202]:
+                try:
+                    return response.json()
+                except Exception as json_error:
+                    print(f"Error decoding JSON response: {str(json_error)}")
+                    print(f"Response status code: {response.status_code}")
+                    print(f"Response text: {response.text[:500]}")  # Limited to first 500 chars
+                    # Return success anyway if status code is good
+                    if response.status_code in [200, 201, 202]:
+                        return {"success": True, "message": "Line item added (status code indicates success)"}
             else:
-                print("Error: Could not find invoice in response")
+                print(f"Error adding line item to invoice: {response.status_code}")
+                print(f"Response text: {response.text[:500]}")  # Limited to first 500 chars
                 return None
         except Exception as e:
             print(f"Error adding line item to invoice: {str(e)}")

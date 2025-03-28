@@ -385,21 +385,36 @@ class DevoliBilling:
                     print(f"ℹ️ Skipping {customer} - $0 invoice (no call data)")
                     return None
             
-            # Find Xero contact
-            xero_name = self.customer_mapping.get(customer.strip())
-            if not xero_name:
-                raise ValueError(f"No Xero mapping found for {customer}")
+            # Find Xero contact - first check if the customer name is already a Xero name
+            # This is the case when we get the customer name from the UI where it's already mapped
+            xero_name = customer.strip()
             
+            # Check if this name exists in Xero contacts
             contacts = self.fetch_xero_contacts()
             if not contacts:
                 raise ValueError("Failed to fetch Xero contacts")
             
+            # Try direct match first
             xero_contact = None
             search_name = xero_name.lower()
             for contact in contacts:
                 if contact['Name'].lower() == search_name:
                     xero_contact = contact
                     break
+            
+            # If no direct match, try using the mapping
+            if not xero_contact:
+                # Try to find via mapping
+                mapped_name = self.customer_mapping.get(customer.strip())
+                if not mapped_name:
+                    raise ValueError(f"No Xero mapping found for {customer}")
+                
+                # Search again with mapped name
+                search_name = mapped_name.lower()
+                for contact in contacts:
+                    if contact['Name'].lower() == search_name:
+                        xero_contact = contact
+                        break
             
             if not xero_contact:
                 raise ValueError(f"Contact '{xero_name}' not found in Xero")

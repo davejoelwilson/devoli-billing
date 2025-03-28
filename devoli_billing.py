@@ -434,7 +434,7 @@ class DevoliBilling:
                 "LineItems": line_items,
                 "Date": invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d'))),
                 "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
-                "Reference": invoice_params.get('reference', "Devoli Calling Charges"),
+                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_params.get('date')).strftime('%B %Y')}"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }
             

@@ -616,35 +616,18 @@ def process_customer(customer_name, customer_data):
                     # Calculate the discount amount (6% of calling charges)
                     discount_amount = float(totals['calling_charges']) * 0.06
                     
-                    # Get the account code based on the customer name
-                    # Different SPARK customers may have different account codes
-                    if "TIAKINA" in customer_name.upper():
-                        account_code = "45900"  # SPARK Sales Commission Taken
-                        description = "Spark Discount Taken"
-                    elif "WHITECHURCH" in customer_name.upper():
-                        account_code = "45900"  # SPARK Sales Commission Taken
-                        description = "Spark Discount Taken"
-                    else:
-                        account_code = "45900"  # Default SPARK sales account
-                        description = "SPARK 6% Discount"
-                    
                     # Only add if there's an actual discount to apply
                     if discount_amount > 0:
                         st.info(f"Applying SPARK discount of ${discount_amount:.2f} to invoice for {customer_name}")
                         
-                        # Create the discount line item
+                        # Create the discount line item with consistent format for all SPARK customers
                         spark_discount_line = {
-                            "Description": description,
-                            "Quantity": 1.0,
-                            "UnitAmount": -discount_amount,  # Negative for a discount
-                            "AccountCode": account_code,
+                            "Description": "Spark Discount Taken",
+                            "Quantity": float(totals['calling_charges']),
+                            "UnitAmount": -0.06,  # 6% as a rate
+                            "AccountCode": "45900",  # SPARK Sales account
                             "TaxType": "OUTPUT2"  # 15% GST
                         }
-                        
-                        # For customers that need the quantity to be the calling charges amount
-                        if "TIAKINA" in customer_name.upper():
-                            spark_discount_line["Quantity"] = float(totals['calling_charges'])
-                            spark_discount_line["UnitAmount"] = -0.06  # 6% as a rate
                     else:
                         st.info(f"No SPARK discount applied for {customer_name} (amount would be $0)")
                 except Exception as discount_error:

@@ -428,11 +428,14 @@ class DevoliBilling:
                 raise ValueError(f"Contact '{xero_name}' not found in Xero")
             
             # Create the invoice
-            # Get the original date from the first row of customer data
-            original_date = pd.to_datetime(customer_data['invoice_date'].iloc[0])
-            
-            # Calculate invoice date (last day of next month)
-            invoice_date = invoice_params.get('date', self.calculate_invoice_date(original_date.strftime('%Y-%m-%d')))
+            # Get the invoice date from parameters
+            invoice_date = invoice_params.get('date')
+            if not invoice_date:
+                raise ValueError("No invoice date provided in parameters")
+                
+            # Calculate due date (20 days after invoice date)
+            due_date = invoice_params.get('due_date', 
+                (pd.to_datetime(invoice_date) + pd.Timedelta(days=20)).strftime('%Y-%m-%d'))
             
             # For reference, use the month name from the invoice date
             invoice_data = {
@@ -440,7 +443,7 @@ class DevoliBilling:
                 "Contact": xero_contact,
                 "LineItems": line_items,
                 "Date": invoice_date,
-                "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_date) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
+                "DueDate": due_date,
                 "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }

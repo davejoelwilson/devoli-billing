@@ -215,7 +215,7 @@ class XeroAuth:
         )
         
         print("\nOpening browser for authentication...")
-        server = StoppableHTTPServer(('localhost', 8503), XeroAuthHandler)
+        server = StoppableHTTPServer(('localhost', 8080), XeroAuthHandler)
         webbrowser.open(auth_url)
         
         server.serve_forever()
@@ -290,6 +290,54 @@ class XeroAuth:
         except requests.exceptions.RequestException as e:
             print(f"\nError getting connected tenants: {str(e)}")
             return []
+
+def debug_auth_setup() -> dict:
+    """Get environment info for debugging"""
+    return {
+        'XERO_CLIENT_ID': os.getenv('XERO_CLIENT_ID'),
+        'XERO_CLIENT_SECRET': os.getenv('XERO_CLIENT_SECRET')
+    }
+
+def start_auth_flow() -> dict:
+    """Start the Xero authentication flow"""
+    try:
+        client_id = os.getenv('XERO_CLIENT_ID')
+        client_secret = os.getenv('XERO_CLIENT_SECRET')
+        
+        if not client_id or not client_secret:
+            return {
+                'status': 'error',
+                'message': 'Missing client credentials in environment'
+            }
+        
+        xero = XeroAuth(client_id, client_secret)
+        auth_code = xero.get_authorization_code()
+        
+        if not auth_code:
+            return {
+                'status': 'error',
+                'message': 'Failed to get authorization code'
+            }
+        
+        if xero.exchange_code_for_tokens(auth_code):
+            tenants = xero.get_connected_tenants()
+            if tenants:
+                return {
+                    'status': 'success',
+                    'message': f'Successfully authenticated with {len(tenants)} tenant(s)',
+                    'expires_at': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() + xero.token_expires_in))
+                }
+        
+        return {
+            'status': 'error',
+            'message': 'Failed to exchange code for tokens'
+        }
+        
+    except Exception as e:
+        return {
+            'status': 'error',
+            'message': f'Authentication error: {str(e)}'
+        }
 
 def main():
     st.title("=== Xero Authentication (Debug Mode) ===")

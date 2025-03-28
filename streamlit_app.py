@@ -560,15 +560,12 @@ def process_customer(customer_name, customer_data):
         if first_date is None:
             first_date = datetime.datetime.now()
             
-        # Set invoice date to the last day of the current month
-        today = datetime.datetime.now()
-        invoice_date = pd.to_datetime(f"{today.year}-{today.month + 1 if today.month < 12 else 1}-01") - pd.Timedelta(days=1)
+        # Calculate invoice date (last day of next month)
+        invoice_date = billing_processor.calculate_invoice_date(first_date.strftime('%Y-%m-%d'))
+        due_date = pd.to_datetime(invoice_date) + pd.Timedelta(days=20)
         
-        # Due date is 20 days after invoice date
-        due_date = invoice_date + pd.Timedelta(days=20)
-        
-        # Set reference
-        reference = "Devoli Calling Charges"
+        # Create reference number
+        reference = f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"
         
         # Check if this is The Service Company
         is_service_company = customer_name.lower() == 'the service company'
@@ -625,7 +622,7 @@ def process_customer(customer_name, customer_data):
                 customer_name,
                 customer_data,
                 invoice_params={
-                    'date': invoice_date.strftime('%Y-%m-%d'),
+                    'date': invoice_date,  # Already in YYYY-MM-DD format
                     'due_date': due_date.strftime('%Y-%m-%d'),
                     'status': 'DRAFT',
                     'type': 'ACCREC',
@@ -692,7 +689,7 @@ def process_customer(customer_name, customer_data):
                 customer_name,
                 customer_data,
                 invoice_params={
-                    'date': invoice_date.strftime('%Y-%m-%d'),
+                    'date': invoice_date,  # Already in YYYY-MM-DD format
                     'due_date': due_date.strftime('%Y-%m-%d'),
                     'status': 'DRAFT',
                     'type': 'ACCREC',

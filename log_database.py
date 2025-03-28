@@ -278,4 +278,50 @@ class LogDatabase:
             print(f"Error updating file note: {str(e)}")
             return False
         finally:
+            conn.close()
+
+    def clear_all_data(self):
+        """Clear all data from the database"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            # Delete in correct order due to foreign key constraints
+            cursor.execute('DELETE FROM invoice_creation')
+            cursor.execute('DELETE FROM file_processing')
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error clearing database: {str(e)}")
+            return False
+        finally:
+            conn.close()
+
+    def clear_file_data(self, file_id):
+        """Clear all data related to a specific file"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            # Delete invoices first due to foreign key constraint
+            cursor.execute('DELETE FROM invoice_creation WHERE file_processing_id = ?', (file_id,))
+            cursor.execute('DELETE FROM file_processing WHERE id = ?', (file_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error clearing file data: {str(e)}")
+            return False
+        finally:
+            conn.close()
+
+    def clear_invoice_data(self, invoice_id):
+        """Clear a specific invoice record"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM invoice_creation WHERE id = ?', (invoice_id,))
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error clearing invoice data: {str(e)}")
+            return False
+        finally:
             conn.close() 

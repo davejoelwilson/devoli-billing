@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import traceback
 from log_database import LogDatabase
+import time
 
 def format_datetime(dt_str):
     """Format datetime string for display"""
@@ -38,7 +39,79 @@ def log_history_page():
         3. Restart the application
         """)
         return
+
+    # Add database management section
+    with st.expander("Database Management"):
+        st.warning("⚠️ Warning: These actions cannot be undone!")
         
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("Clear All Data", type="primary"):
+                if st.session_state.get('confirm_clear_all'):
+                    if db.clear_all_data():
+                        st.success("All data cleared successfully")
+                        st.session_state.confirm_clear_all = False
+                        time.sleep(1)
+                        st.experimental_rerun()
+                    else:
+                        st.error("Failed to clear data")
+                else:
+                    st.session_state.confirm_clear_all = True
+                    st.warning("Click again to confirm clearing ALL data")
+        
+        with col2:
+            # Get list of files for selection
+            files_df = db.get_processed_files()
+            if not files_df.empty:
+                file_to_clear = st.selectbox(
+                    "Select file to clear",
+                    options=files_df['filename'].tolist(),
+                    key="file_to_clear"
+                )
+                file_id = files_df[files_df['filename'] == file_to_clear]['id'].iloc[0]
+                
+                if st.button("Clear Selected File"):
+                    if st.session_state.get('confirm_clear_file'):
+                        if db.clear_file_data(file_id):
+                            st.success(f"Data for {file_to_clear} cleared successfully")
+                            st.session_state.confirm_clear_file = False
+                            time.sleep(1)
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to clear file data")
+                    else:
+                        st.session_state.confirm_clear_file = True
+                        st.warning("Click again to confirm clearing file data")
+        
+        with col3:
+            # Get list of invoices for selection
+            invoices_df = db.get_created_invoices()
+            if not invoices_df.empty:
+                invoice_to_clear = st.selectbox(
+                    "Select invoice to clear",
+                    options=[f"{row['xero_customer_name']} - {row['invoice_date']}" 
+                            for _, row in invoices_df.iterrows()],
+                    key="invoice_to_clear"
+                )
+                invoice_idx = st.selectbox("Select invoice to clear", 
+                    options=invoices_df.index.tolist(),
+                    format_func=lambda x: f"{invoices_df.loc[x, 'xero_customer_name']} - {invoices_df.loc[x, 'invoice_date']}")
+                
+                if st.button("Clear Selected Invoice"):
+                    if st.session_state.get('confirm_clear_invoice'):
+                        invoice_id = invoices_df.loc[invoice_idx, 'id']
+                        if db.clear_invoice_data(invoice_id):
+                            st.success("Invoice cleared successfully")
+                            st.session_state.confirm_clear_invoice = False
+                            time.sleep(1)
+                            st.experimental_rerun()
+                        else:
+                            st.error("Failed to clear invoice data")
+                    else:
+                        st.session_state.confirm_clear_invoice = True
+                        st.warning("Click again to confirm clearing invoice")
+    
     # Create tabs for Files and Invoices
     tab1, tab2 = st.tabs(["Processed Files", "Created Invoices"])
     

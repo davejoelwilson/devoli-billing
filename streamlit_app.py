@@ -518,8 +518,21 @@ def process_customer(customer_name, customer_data):
         
         # Format dates for invoice based on the first date in the data
         # Extract first date from customer_data
-        first_date = pd.to_datetime(customer_data['Date'].iloc[0]) if 'Date' in customer_data.columns else datetime.datetime.now()
-        
+        first_date = None
+        try:
+            if 'Date' in customer_data.columns:
+                first_date = pd.to_datetime(customer_data['Date'].iloc[0])
+            elif hasattr(customer_data, 'name'):
+                # Try to extract date from filename (e.g., Invoice_123456_2024-01-31.csv)
+                date_str = os.path.basename(customer_data.name).split('_')[2].split('.')[0]
+                first_date = pd.to_datetime(date_str)
+        except (IndexError, ValueError, AttributeError) as e:
+            st.warning(f"Could not extract date from data, using current date: {str(e)}")
+            
+        # Default to current date if extraction failed
+        if first_date is None:
+            first_date = datetime.datetime.now()
+            
         # Add 2 months to get the invoice month, then get last day of that month
         next_month_date = first_date + pd.DateOffset(months=2)
         # Get the last day of the month
@@ -661,7 +674,8 @@ def process_customer(customer_name, customer_data):
         }
         
     except Exception as e:
-        # Return error
+        # Return error with traceback for debugging
+        traceback.print_exc()
         return {
             'success': False,
             'name': customer_name,

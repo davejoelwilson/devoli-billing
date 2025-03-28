@@ -131,7 +131,21 @@ class LogDatabase:
         file_record = cursor.fetchone()
         
         if not file_record:
-            return False
+            # Create a file processing record if it doesn't exist
+            cursor.execute('''
+            INSERT INTO file_processing (filename, processing_date, user_notes, file_date)
+            VALUES (?, ?, ?, ?)
+            ''', (filename, datetime.now().isoformat(), "Auto-created during invoice processing", None))
+            self.conn.commit()
+            
+            # Get the new file ID
+            cursor.execute('''
+            SELECT id FROM file_processing WHERE filename = ?
+            ''', (filename,))
+            file_record = cursor.fetchone()
+            
+            if not file_record:
+                return False
         
         file_processing_id = file_record[0]
         
@@ -151,9 +165,22 @@ class LogDatabase:
             WHERE id = ?
             ''', (invoice_record[0],))
         else:
-            # Nothing to update
-            return False
-            
+            # Create a new record if none exists
+            cursor.execute('''
+            INSERT INTO invoice_creation 
+            (file_processing_id, xero_customer_name, devoli_customer_names, 
+            invoice_number, invoice_date, amount, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                file_processing_id, 
+                xero_customer_name, 
+                xero_customer_name, # Use customer name as devoli name if we don't have it
+                'Unknown', # Don't know the invoice number 
+                datetime.now().isoformat(), 
+                0.0, # Don't know the amount
+                'processed'
+            ))
+        
         self.conn.commit()
         return True
     
@@ -161,29 +188,47 @@ class LogDatabase:
         """Check if a specific invoice has been processed already"""
         cursor = self.conn.cursor()
         
-        # Get file processing ID
-        cursor.execute('''
-        SELECT id FROM file_processing WHERE filename = ?
-        ''', (filename,))
-        
-        file_record = cursor.fetchone()
-        if not file_record:
-            return False
+        try:
+            # First, try direct query using both parameters
+            cursor.execute('''
+            SELECT ic.status FROM invoice_creation ic
+            JOIN file_processing fp ON ic.file_processing_id = fp.id
+            WHERE fp.filename = ? AND ic.xero_customer_name = ?
+            ''', (filename, xero_customer_name))
             
-        file_id = file_record[0]
-        
-        # Check invoice creation status
-        cursor.execute('''
-        SELECT status FROM invoice_creation 
-        WHERE file_processing_id = ? AND xero_customer_name = ?
-        ''', (file_id, xero_customer_name))
-        
-        invoice_record = cursor.fetchone()
-        if not invoice_record:
-            return False
+            invoice_record = cursor.fetchone()
+            if invoice_record:
+                # If status is 'processed', it's been processed already
+                return invoice_record[0] == 'processed'
             
-        # If status is 'processed', it's been processed already
-        return invoice_record[0] == 'processed'
+            # If not found, check if we have the file at least
+            cursor.execute('''
+            SELECT id FROM file_processing WHERE filename = ?
+            ''', (filename,))
+            
+            file_record = cursor.fetchone()
+            if not file_record:
+                # No file record, definitely not processed
+                return False
+            
+            # Finally, check if we have any invoice for this customer (regardless of file)
+            cursor.execute('''
+            SELECT status FROM invoice_creation 
+            WHERE xero_customer_name = ?
+            ''', (xero_customer_name,))
+            
+            invoice_record = cursor.fetchone()
+            if not invoice_record:
+                return False
+            
+            # This is a fallback - if we found any record at all for this customer
+            # Return true only if it's specifically marked as processed
+            return invoice_record[0] == 'processed'
+        
+        except Exception as e:
+            print(f"Database error in check_if_processed: {str(e)}")
+            # If there's any error, assume not processed
+            return False
     
     def close(self):
         """Close the database connection"""

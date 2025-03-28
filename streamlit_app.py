@@ -695,7 +695,14 @@ def process_selected_companies(selected_companies, df):
     
     # Ensure log database is initialized
     log_db = st.session_state.log_db
+    
+    # Get the file log ID - create one if it doesn't exist
     file_log_id = st.session_state.current_file_log_id
+    if not file_log_id:
+        invoice_file = os.path.basename(df.name) if hasattr(df, 'name') else "unknown_file.csv"
+        file_log_id = log_db.log_file_processing(invoice_file)
+        st.session_state.current_file_log_id = file_log_id
+        st.write(f"Created new file log record: {file_log_id}")
     
     for i, company in enumerate(selected_companies):
         # Update progress
@@ -732,17 +739,29 @@ def process_selected_companies(selected_companies, df):
                 # Mark as processed
                 company['processed'] = True
                 
-                # Log invoice creation
-                log_db.log_invoice_creation(
-                    file_log_id,
-                    company['name'], 
-                    company.get('devoli_names', ''),
-                    result.get('invoice_number', ''),
-                    float(company['total'].replace('$', ''))
-                )
+                # Clean the total string - remove $ and convert to float
+                total_amount = 0
+                try:
+                    total_amount = float(company['total'].replace('$', '').strip())
+                except ValueError:
+                    with log_container:
+                        st.warning(f"Could not parse total amount: {company['total']}")
+                    total_amount = 0
                 
-                with log_container:
-                    st.success(f"✅ {company['name']}: {result['message']}")
+                # Log invoice creation - make sure it actually gets logged
+                try:
+                    invoice_creation_id = log_db.log_invoice_creation(
+                        file_log_id,
+                        company['name'], 
+                        company.get('devoli_names', ''),
+                        result.get('invoice_number', ''),
+                        total_amount
+                    )
+                    with log_container:
+                        st.success(f"✅ {company['name']}: {result['message']} - Logged: ID {invoice_creation_id}")
+                except Exception as log_error:
+                    with log_container:
+                        st.error(f"⚠️ Invoice created but logging failed: {str(log_error)}")
             else:
                 error_count += 1
                 with log_container:
@@ -772,6 +791,13 @@ def process_selected_companies(selected_companies, df):
     st.write(f"Successfully processed: {success_count} invoices")
     if error_count > 0:
         st.write(f"Errors: {error_count} invoices")
+    
+    # Verify logs were created
+    try:
+        invoices_df = log_db.get_created_invoices(file_log_id)
+        st.write(f"Logged {len(invoices_df)} invoices in database")
+    except Exception as db_error:
+        st.error(f"Error checking logs: {str(db_error)}")
     
     return results
 

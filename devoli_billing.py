@@ -35,6 +35,9 @@ class DevoliBilling:
             'National': 0.05
         }
         
+        # Define Xero API URL
+        self.XERO_API_URL = "https://api.xero.com/api.xro/2.0"
+        
         # Load customer mapping silently
         self.load_customer_mapping()
         

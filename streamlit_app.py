@@ -259,140 +259,124 @@ def process_page():
                             'customer_data': combined_df  # Store customer data for later processing
                         })
                 
-                # Create dataframe from process_data
-                if process_data:
-                    df_data = []
-                    for item in process_data:
-                        df_data.append({
-                            'Select': item['Select'],
-                            'Devoli Names': item['Devoli Names'],
-                            'Xero Name': item['Xero Name'],
-                            'DDI Charges': item['DDI Charges'],
-                            'Calling Charges': item['Calling Charges'],
-                            'Total': item['Total'],
-                            'Already Processed': item['Already Processed']
+                # Store process data for later access
+                st.session_state.process_data = process_data
+                
+                # Display dataframe
+                st.write(f"Found {len(process_data)} customers with charges")
+                
+                # Create selection index for tracking checked items
+                if "selected_indexes" not in st.session_state:
+                    st.session_state.selected_indexes = set()
+                
+                # Add Select All and Clear All buttons with direct table manipulation
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Select All", key="select_all"):
+                        # Find all non-processed rows and select them
+                        st.session_state.selected_indexes = {
+                            i for i, item in enumerate(process_data) 
+                            if not item['Already Processed']
+                        }
+                        st.rerun()
+                
+                with col2:
+                    if st.button("Clear All", key="clear_all"):
+                        # Clear all selections
+                        st.session_state.selected_indexes = set()
+                        st.rerun()
+                
+                # Create checkboxes manually using a selection column
+                for i, item in enumerate(process_data):
+                    item['Select'] = i in st.session_state.selected_indexes and not item['Already Processed']
+                
+                # Create dataframe for display
+                display_df = pd.DataFrame([
+                    {
+                        'Select': item['Select'],
+                        'Devoli Names': item['Devoli Names'],
+                        'Xero Name': item['Xero Name'],
+                        'DDI Charges': item['DDI Charges'],
+                        'Calling Charges': item['Calling Charges'],
+                        'Total': item['Total'],
+                        'Already Processed': item['Already Processed']
+                    } for item in process_data
+                ])
+                
+                # Create a dataframe with checkboxes 
+                edited_df = st.data_editor(
+                    display_df,
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn(
+                            "Process",
+                            help="Select customers to process",
+                            default=False
+                        ),
+                        "Already Processed": st.column_config.CheckboxColumn(
+                            "Already Processed",
+                            help="Customer was already processed",
+                            disabled=True
+                        )
+                    },
+                    disabled=["Devoli Names", "Xero Name", "DDI Charges", "Calling Charges", "Total", "Already Processed"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="process_editor"
+                )
+                
+                # Update selections based on checkbox changes
+                def update_selections(df):
+                    if df is not None:
+                        # Get indices of selected rows
+                        selected_indices = set()
+                        for i, row in df.iterrows():
+                            if row['Select'] == True:
+                                selected_indices.add(i)
+                        st.session_state.selected_indexes = selected_indices
+                
+                # Update selected indexes based on the edited dataframe
+                update_selections(edited_df)
+                
+                # Get selected companies directly from the process_data list using selected_indexes
+                selected_companies = []
+                for i in st.session_state.selected_indexes:
+                    if i < len(process_data):
+                        item = process_data[i]
+                        selected_companies.append({
+                            'name': item['Xero Name'],
+                            'devoli_names': item['Devoli Names'],
+                            'total': item['Total'],
+                            'data': item['customer_data']
                         })
-                    
-                    process_df = pd.DataFrame(df_data)
-                    
-                    # Store data in session state
-                    st.session_state.process_df = process_df
-                    st.session_state.process_data = process_data
-                    
-                    # Display dataframe
-                    st.write(f"Found {len(process_data)} customers with charges")
-                    
-                    # Check if we need to handle button actions
-                    if "select_all_clicked" not in st.session_state:
-                        st.session_state.select_all_clicked = False
-                    if "clear_all_clicked" not in st.session_state:
-                        st.session_state.clear_all_clicked = False
-                    if "newly_processed" not in st.session_state:
-                        st.session_state.newly_processed = []
-                    
-                    # Process the DataFrame before displaying it based on button states
-                    if st.session_state.select_all_clicked:
-                        process_df["Select"] = ~process_df["Already Processed"]
-                        st.session_state.select_all_clicked = False  # Reset
-                    
-                    if st.session_state.clear_all_clicked:
-                        process_df["Select"] = False
-                        st.session_state.clear_all_clicked = False  # Reset
-                    
-                    # Update the newly processed companies
-                    if st.session_state.newly_processed:
-                        for company_name in st.session_state.newly_processed:
-                            mask = process_df["Xero Name"] == company_name
-                            process_df.loc[mask, "Already Processed"] = True
-                        # Clear the newly processed list
-                        st.session_state.newly_processed = []
-                    
-                    # Add Select All and Clear All buttons
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("Select All", key="select_all"):
-                            st.session_state.select_all_clicked = True
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("Clear All", key="clear_all"):
-                            st.session_state.clear_all_clicked = True
-                            st.rerun()
-                    
-                    # Create a dataframe with checkboxes 
-                    edited_df = st.data_editor(
-                        process_df,
-                        column_config={
-                            "Select": st.column_config.CheckboxColumn(
-                                "Process",
-                                help="Select customers to process",
-                                default=False
-                            ),
-                            "Already Processed": st.column_config.CheckboxColumn(
-                                "Already Processed",
-                                help="Customer was already processed",
-                                disabled=True
-                            )
-                        },
-                        disabled=["Devoli Names", "Xero Name", "DDI Charges", "Calling Charges", "Total", "Already Processed"],
-                        hide_index=True,
-                        use_container_width=True,
-                        key="process_editor"
-                    )
-                    
-                    # Update session state with any changes made in the editor
-                    st.session_state.process_df = edited_df
-                    
-                    # Get selected companies
-                    selected_rows = edited_df[edited_df['Select'] == True]
-                    selected_companies = []
-                    
-                    if not selected_rows.empty:
-                        for _, row in selected_rows.iterrows():
-                            xero_name = row['Xero Name']
-                            # Find the corresponding process_data entry
-                            data_entry = next(item for item in process_data if item['Xero Name'] == xero_name)
-                            selected_companies.append({
-                                'name': xero_name,
-                                'devoli_names': row['Devoli Names'],
-                                'total': row['Total'],
-                                'data': data_entry['customer_data']
-                            })
-                    
-                    # Store selected companies in session state
-                    st.session_state.selected_companies = selected_companies
-                    
-                    # Add a continue button
-                    if selected_companies:
-                        if st.button("Process Selected Companies", key="process_selected"):
-                            # Process the selected companies
-                            results = process_selected_companies(selected_companies, df)
-                            
-                            # Add details to session state
-                            st.session_state.processing_results = results
-                            
-                            # Show success message
-                            st.success(f"Successfully processed {len(results)} companies")
-                            
-                            # Store the newly processed companies to update the UI after rerun
-                            if 'newly_processed' not in st.session_state:
-                                st.session_state.newly_processed = []
-                                
-                            # Add newly processed companies to the list
-                            st.session_state.newly_processed = [company['name'] for company in selected_companies]
-                            
-                            # Mark as processed in database
-                            for company in selected_companies:
-                                xero_name = company['name']
-                                st.session_state.log_db.mark_invoice_as_processed(xero_name, invoice_filename)
-                            
-                            # Force rerun to refresh the UI - no need to modify process_df here
-                            st.rerun()
-                    else:
-                        st.info("Select at least one company to process")
-                else:
-                    st.warning("No customers found with charges")
+                
+                # Add a continue button
+                if selected_companies:
+                    if st.button("Process Selected Companies", key="process_selected"):
+                        # Process the selected companies
+                        results = process_selected_companies(selected_companies, df)
                         
+                        # Show success message
+                        st.success(f"Successfully processed {len(results)} companies")
+                        
+                        # Mark processed items in the database
+                        for company in selected_companies:
+                            st.session_state.log_db.mark_invoice_as_processed(
+                                company['name'], 
+                                invoice_filename
+                            )
+                        
+                        # Mark items as processed in our display logic
+                        for i in st.session_state.selected_indexes:
+                            if i < len(process_data):
+                                process_data[i]['Already Processed'] = True
+                        
+                        # Clear selections after processing
+                        st.session_state.selected_indexes = set()
+                        
+                        # Rerun to refresh the UI
+                        st.rerun()
+                else:
+                    st.info("Select at least one company to process")
             except Exception as e:
                 st.error(f"Error processing invoice: {str(e)}")
                 traceback.print_exc()

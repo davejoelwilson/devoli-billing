@@ -303,13 +303,16 @@ class DevoliBilling:
             # Normalize column names to lowercase for case-insensitive comparison
             customer_data.columns = customer_data.columns.str.lower()
             
+            # Get the file date from customer_data
+            file_date = pd.to_datetime(customer_data['invoice_date'].iloc[0])
+            
             # Validate and set defaults for invoice params
             if invoice_params is None:
                 invoice_params = {}
             
             today = datetime.now().strftime('%Y-%m-%d')
             invoice_params = {
-                'date': invoice_params.get('date', today),
+                'date': invoice_params.get('date', self.calculate_invoice_date(file_date.strftime('%Y-%m-%d'))),
                 'due_date': invoice_params.get('due_date', 
                     (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')),
                 'description': invoice_params.get('description', ''),
@@ -428,14 +431,21 @@ class DevoliBilling:
                 raise ValueError(f"Contact '{xero_name}' not found in Xero")
             
             # Create the invoice
-            invoice_date = invoice_params.get('date', self.calculate_invoice_date(datetime.now().strftime('%Y-%m-%d')))
+            invoice_date = invoice_params.get('date', self.calculate_invoice_date(file_date.strftime('%Y-%m-%d')))
+            
+            # For reference, use the month after the file date
+            if file_date.month == 12:
+                ref_month = pd.to_datetime(f"{file_date.year + 1}-01-01")
+            else:
+                ref_month = pd.to_datetime(f"{file_date.year}-{file_date.month + 1:02d}-01")
+            
             invoice_data = {
                 "Type": invoice_params.get('type', 'ACCREC'),
                 "Contact": xero_contact,
                 "LineItems": line_items,
                 "Date": invoice_date,
                 "DueDate": invoice_params.get('due_date', (pd.to_datetime(invoice_date) + pd.Timedelta(days=20)).strftime('%Y-%m-%d')),
-                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"),
+                "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {ref_month.strftime('%B %Y')}"),
                 "Status": invoice_params.get('status', 'DRAFT')
             }
             

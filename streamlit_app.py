@@ -223,7 +223,7 @@ def process_page():
                             already_processed = st.session_state.log_db.check_if_processed(invoice_filename, xero_name)
                             
                             process_data.append({
-                                'Select': not already_processed,
+                                'Select': False,  # Always set to False by default
                                 'Devoli Names': ', '.join(customers),
                                 'Xero Name': xero_name,
                                 'DDI Charges': f"${ddi_charges:.2f}",
@@ -249,7 +249,7 @@ def process_page():
                         
                         # Add to process data
                         process_data.append({
-                            'Select': not already_processed,
+                            'Select': False,  # Always set to False by default
                             'Devoli Names': ', '.join(customers),
                             'Xero Name': xero_name,
                             'DDI Charges': f"${totals['ddi_charges']:.2f}",

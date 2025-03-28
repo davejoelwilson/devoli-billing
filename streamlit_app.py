@@ -670,6 +670,15 @@ def process_customer(customer_name, customer_data):
 
 def process_selected_companies(selected_companies, df):
     """Process selected companies to Xero"""
+    # Debug info
+    st.write(f"Processing {len(selected_companies)} companies")
+    st.write("Selected companies:", [c['name'] for c in selected_companies])
+    
+    # If no companies selected, return early
+    if not selected_companies:
+        st.warning("No companies selected for processing")
+        return []
+    
     results = []
     billing_processor = st.session_state.billing_processor
     

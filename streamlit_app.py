@@ -136,6 +136,52 @@ def process_page():
         )
 
         if selected_invoice:
+            # Get filename for the selected invoice
+            invoice_filename = invoice_options[selected_invoice]
+            
+            # Add a button to clear the log for this file
+            clear_col1, clear_col2 = st.columns([1, 3])
+            with clear_col1:
+                if st.button("Clear Log for This File", key="clear_log"):
+                    # Find the file ID in the logs
+                    log_db = st.session_state.log_db
+                    files_df = log_db.get_processed_files()
+                    file_id = None
+                    
+                    if not files_df.empty:
+                        # Find the file in the DataFrame
+                        file_row = files_df[files_df['filename'] == invoice_filename]
+                        if not file_row.empty:
+                            file_id = file_row.iloc[0]['id']
+                    
+                    # Clear file data if found
+                    if file_id:
+                        if log_db.clear_file_data(file_id):
+                            st.success(f"Cleared log for {invoice_filename}")
+                            # Reset current file log ID
+                            st.session_state.current_file_log_id = None
+                            # Clear process_df if it exists
+                            if 'process_df' in st.session_state:
+                                del st.session_state.process_df
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to clear log for {invoice_filename}")
+                    else:
+                        st.info(f"No log found for {invoice_filename}")
+            
+            with clear_col2:
+                # Show any existing log records for this file
+                try:
+                    log_db = st.session_state.log_db
+                    invoices_df = log_db.get_created_invoices()
+                    if not invoices_df.empty:
+                        # Filter for current file
+                        file_invoices = invoices_df[invoices_df['filename'] == invoice_filename]
+                        if not file_invoices.empty:
+                            st.info(f"Found {len(file_invoices)} processed invoices for this file in the log.")
+                except Exception as e:
+                    st.warning(f"Error checking log status: {str(e)}")
+            
             # Clear process_df when invoice changes
             if 'last_invoice' not in st.session_state or st.session_state.last_invoice != selected_invoice:
                 if 'process_df' in st.session_state:
@@ -144,12 +190,11 @@ def process_page():
                 # Reset current file log ID when invoice changes
                 st.session_state.current_file_log_id = None
             
-            invoice_file = os.path.join("bills", invoice_options[selected_invoice])
-            invoice_filename = invoice_options[selected_invoice]
+            invoice_file = os.path.join("bills", invoice_filename)
             
             # Create a placeholder for the temporary message
             msg_placeholder = st.empty()
-            msg_placeholder.info(f"Processing: {invoice_options[selected_invoice]}")
+            msg_placeholder.info(f"Processing: {invoice_filename}")
             
             # Sleep for 1 second then clear the message
             time.sleep(1)
@@ -220,18 +265,22 @@ def process_page():
                             calling_charges = service_results['base_fee'] + sum(data['total'] for data in service_results['numbers'].values())
                             total = service_results['total']
                             
+                            # IMPORTANT: Use the full TSC name as stored in Xero
+                            full_tsc_name = "The Service Company Limited"
+                            
                             # Check if invoice has already been processed
-                            already_processed = st.session_state.log_db.check_if_processed(invoice_filename, xero_name)
+                            already_processed = st.session_state.log_db.check_if_processed(invoice_filename, full_tsc_name)
                             
                             process_data.append({
                                 'Select': False,  # Always set to False by default
                                 'Devoli Names': ', '.join(customers),
-                                'Xero Name': xero_name,
+                                'Xero Name': full_tsc_name,  # Use full name for Xero
                                 'DDI Charges': f"${ddi_charges:.2f}",
                                 'Calling Charges': f"${calling_charges:.2f}",
                                 'Total': f"${total:.2f}",
                                 'Already Processed': already_processed,
-                                'customer_data': service_df
+                                'customer_data': service_df,
+                                'is_tsc': True  # Flag as TSC for later processing
                             })
                     else:
                         # Skip if no data
@@ -539,6 +588,24 @@ def process_customer(customer_name, customer_data):
         # Get billing processor
         billing_processor = st.session_state.billing_processor
         
+        # Check if this is The Service Company
+        is_service_company = (
+            customer_name.lower() == 'the service company' or
+            customer_name.lower() == 'the service company limited' or
+            getattr(customer_data, 'is_tsc', False)
+        )
+        
+        # Debug info for TSC
+        if is_service_company:
+            print(f"Processing TSC invoice with filename: {getattr(customer_data, 'name', 'Unknown')}")
+            invoice_file = os.path.basename(getattr(customer_data, 'name', 'Unknown')) if hasattr(customer_data, 'name') else "unknown_file.csv"
+            log_db = st.session_state.log_db
+            try:
+                is_processed = log_db.check_if_processed(invoice_file, "The Service Company Limited")
+                print(f"TSC already processed for {invoice_file}: {is_processed}")
+            except Exception as log_error:
+                print(f"Error checking if TSC processed: {str(log_error)}")
+        
         # Calculate totals
         totals = calculate_customer_totals(customer_data)
         
@@ -578,70 +645,122 @@ def process_customer(customer_name, customer_data):
         # Create reference number
         reference = f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"
         
-        # Check if this is The Service Company
-        is_service_company = customer_name.lower() == 'the service company'
+        # Get correct TSC name
+        if is_service_company:
+            # Always use the full legal name for TSC in Xero
+            xero_customer_name = "The Service Company Limited"
+        else:
+            xero_customer_name = customer_name
         
         # Create invoice
         if is_service_company:
             # Use special processing for The Service Company
-            service_processor = st.session_state.service_processor
-            service_results = service_processor.process_billing(customer_data)
-            
-            # Generate line items
-            line_items = []
-            
-            # Base fee line item
-            line_items.append({
-                "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
-                "Quantity": 1.0,
-                "UnitAmount": service_results['base_fee'],
-                "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
-                "TaxType": "OUTPUT2"
-            })
-            
-            # Add regular number details if they exist
-            if service_results['regular_number']['calls']:
-                regular_desc = ['6492003366']
-                for call in service_results['regular_number']['calls']:
-                    regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
+            try:
+                print(f"Processing The Service Company invoice")
+                print(f"Customer data shape: {customer_data.shape}")
                 
+                service_processor = st.session_state.service_processor
+                service_results = service_processor.process_billing(customer_data)
+                
+                print(f"Service results: {len(service_results.get('numbers', {}))}")
+                print(f"Regular number calls: {len(service_results.get('regular_number', {}).get('calls', []))}")
+                
+                # Generate line items
+                line_items = []
+                
+                # Base fee line item
                 line_items.append({
-                    "Description": '\n'.join(regular_desc),
+                    "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
                     "Quantity": 1.0,
-                    "UnitAmount": service_results['regular_number']['total'],
+                    "UnitAmount": service_results['base_fee'],
                     "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
                     "TaxType": "OUTPUT2"
                 })
-            
-            # Add toll free number details
-            for number, data in service_results['numbers'].items():
-                if data['calls']:
-                    number_desc = [number]
-                    for call in data['calls']:
-                        number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+                
+                # Add regular number details if they exist
+                if service_results['regular_number']['calls']:
+                    regular_desc = ['6492003366']
+                    for call in service_results['regular_number']['calls']:
+                        regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
                     
                     line_items.append({
-                        "Description": '\n'.join(number_desc),
+                        "Description": '\n'.join(regular_desc),
                         "Quantity": 1.0,
-                        "UnitAmount": data['total'],
+                        "UnitAmount": service_results['regular_number']['total'],
                         "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
                         "TaxType": "OUTPUT2"
                     })
-            
-            # Create Xero invoice
-            xero_invoice = billing_processor.create_xero_invoice(
-                customer_name,
-                customer_data,
-                invoice_params={
-                    'date': invoice_date,  # Already in YYYY-MM-DD format
-                    'due_date': due_date.strftime('%Y-%m-%d'),
-                    'status': 'DRAFT',
-                    'type': 'ACCREC',
-                    'line_amount_types': 'Exclusive',
-                    'reference': reference,
-                    'line_items': line_items
-                }
-            )
+                
+                # Add toll free number details
+                for number, data in service_results['numbers'].items():
+                    if data['calls']:
+                        number_desc = [number]
+                        for call in data['calls']:
+                            number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+                        
+                        line_items.append({
+                            "Description": '\n'.join(number_desc),
+                            "Quantity": 1.0,
+                            "UnitAmount": data['total'],
+                            "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                            "TaxType": "OUTPUT2"
+                        })
+                
+                # Log line items for debugging
+                print(f"Created {len(line_items)} line items for The Service Company")
+
+                # CRITICAL FIX: Use the full TSC name as stored in Xero to avoid mapping issues
+                tsc_xero_name = "The Service Company Limited"
+                
+                # Create Xero invoice with proper parameters
+                xero_invoice = billing_processor.create_xero_invoice(
+                    xero_customer_name,  # Use the properly determined name
+                    customer_data,
+                    invoice_params={
+                        'date': invoice_date,
+                        'due_date': due_date.strftime('%Y-%m-%d'),
+                        'status': 'DRAFT',
+                        'type': 'ACCREC',
+                        'line_amount_types': 'Exclusive',
+                        'reference': reference,
+                        'line_items': line_items
+                    }
+                )
+                
+            except Exception as tsc_error:
+                print(f"Error processing The Service Company billing: {str(tsc_error)}")
+                traceback.print_exc()
+                # Fall back to standard processing
+                st.warning(f"Error in The Service Company processing: {str(tsc_error)}")
+                
+                # Format invoice description (fallback)
+                invoice_desc = st.session_state.service_processor.format_call_description(
+                    st.session_state.service_processor.parse_call_data(customer_data)
+                )
+                
+                # Create single line item
+                line_items = [{
+                    "Description": invoice_desc,
+                    "Quantity": 1.0,
+                    "UnitAmount": float(totals['calling_charges']),
+                    "AccountCode": billing_processor.SPECIAL_CUSTOMERS['the service company']['account_code'],
+                    "TaxType": "OUTPUT2"
+                }]
+                
+                # Fall back to standard Xero invoice creation
+                xero_invoice = billing_processor.create_xero_invoice(
+                    xero_customer_name,
+                    customer_data,
+                    invoice_params={
+                        'date': invoice_date,
+                        'due_date': due_date.strftime('%Y-%m-%d'),
+                        'status': 'DRAFT',
+                        'type': 'ACCREC',
+                        'line_amount_types': 'Exclusive',
+                        'reference': reference,
+                        'line_items': line_items
+                    }
+                )
         else:
             # Calculate SPARK discount first if applicable
             spark_discount_line = None
@@ -697,7 +816,7 @@ def process_customer(customer_name, customer_data):
             
             # Create Xero invoice with parameters and all line items
             xero_invoice = billing_processor.create_xero_invoice(
-                customer_name,
+                xero_customer_name,
                 customer_data,
                 invoice_params={
                     'date': invoice_date,  # Already in YYYY-MM-DD format

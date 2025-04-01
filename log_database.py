@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 import pandas as pd
 import traceback
+import re
 
 class LogDatabase:
     def __init__(self, db_path=None):
@@ -220,7 +221,16 @@ class LogDatabase:
             cursor = conn.cursor()
             
             try:
-                # First, try direct query using both parameters
+                # Extract month/year from filename to handle different months
+                month_year = None
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+                if date_match:
+                    date_str = date_match.group(1)
+                    date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+                    month_year = date_obj.strftime('%Y-%m')  # Format as YYYY-MM
+                    print(f"Extracted month-year from filename: {month_year}")
+                
+                # First, check exact filename match for strict checking
                 cursor.execute('''
                 SELECT ic.status FROM invoice_creation ic
                 JOIN file_processing fp ON ic.file_processing_id = fp.id
@@ -230,7 +240,26 @@ class LogDatabase:
                 invoice_record = cursor.fetchone()
                 if invoice_record:
                     # If status is 'processed', it's been processed already
+                    print(f"Found exact match for {xero_customer_name} in {filename}")
                     return invoice_record[0] == 'processed'
+                
+                # If month/year was extracted, we can do a broader check 
+                # to see if the same customer was processed in the same month
+                if month_year:
+                    print(f"Checking if {xero_customer_name} was processed in month {month_year}")
+                    # This only applies to non-TSC customers, as TSC might need
+                    # to be processed for multiple files in the same month
+                    if xero_customer_name != "The Service Company Limited":
+                        cursor.execute('''
+                        SELECT ic.status FROM invoice_creation ic
+                        JOIN file_processing fp ON ic.file_processing_id = fp.id
+                        WHERE fp.filename LIKE ? AND ic.xero_customer_name = ?
+                        ''', (f'%{month_year}%', xero_customer_name))
+                        
+                        month_record = cursor.fetchone()
+                        if month_record:
+                            print(f"Found month match for {xero_customer_name} in {month_year}")
+                            return month_record[0] == 'processed'
                 
                 # If not found, return False (not processed)
                 return False

@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 import os
 import glob
+import traceback  # Add traceback for better error handling
 
 class ServiceCompanyBilling:
     def __init__(self):
@@ -42,8 +43,15 @@ class ServiceCompanyBilling:
         else:
             df = input_data.copy()
         
+        # Debug original dataframe
+        print(f"[DEBUG] Processing billing for The Service Company")
+        print(f"[DEBUG] Input data shape: {df.shape}")
+        
         # Filter for The Service Company
         df = df[df['Customer Name'].str.strip() == 'The Service Company']
+        
+        # Debug TSC data
+        print(f"[DEBUG] After filtering for TSC, data shape: {df.shape}")
         
         # Initialize results
         results = {
@@ -53,15 +61,30 @@ class ServiceCompanyBilling:
             'total': 0  # Initialize to 0, will add base_fee to total later
         }
         
+        # Check for required columns
+        required_columns = ['Description', 'Short Description']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            print(f"[ERROR] Missing required columns: {missing_columns}")
+            print(f"[DEBUG] Available columns: {df.columns.tolist()}")
+            raise ValueError(f"Missing required columns for TSC billing: {missing_columns}")
+        
         # Identify all TFree numbers
         mask = df['Short Description'].str.startswith('64800', na=False)
         tfree_numbers = df[mask]['Short Description'].unique()
+        
+        # Debug TFree numbers
+        print(f"[DEBUG] Found {len(tfree_numbers)} TFree numbers: {tfree_numbers}")
         
         # Initialize numbers dict
         for number in tfree_numbers:
             results['numbers'][number] = {'calls': [], 'total': 0}
         
         # Process each row
+        call_count = 0
+        tfree_call_count = 0
+        regular_call_count = 0
+        
         for _, row in df.iterrows():
             desc = row['Description']
             
@@ -72,8 +95,10 @@ class ServiceCompanyBilling:
             # Extract call details using regex
             call_match = re.search(r'(\d+) calls? - ([\d:]+)', desc)
             if not call_match:
+                print(f"[DEBUG] No call match for description: {desc}")
                 continue
                 
+            call_count += 1
             num_calls = int(call_match.group(1))
             duration = call_match.group(2)
             minutes = self.convert_to_minutes(duration)
@@ -82,6 +107,7 @@ class ServiceCompanyBilling:
             # Process TFree calls
             if 'TFree Inbound' in desc:
                 if number not in results['numbers']:
+                    print(f"[DEBUG] TFree number {number} not in initialized numbers dict")
                     continue
                     
                 # Determine call type
@@ -94,13 +120,16 @@ class ServiceCompanyBilling:
                 elif 'Other' in desc:
                     call_type = 'TFree Inbound - Other'
                 else:
+                    print(f"[DEBUG] Could not determine TFree call type from: {desc}")
                     continue
                 
                 rate = self.rates.get(call_type)
                 if not rate:
+                    print(f"[DEBUG] No rate found for call type: {call_type}")
                     continue
                     
                 charge = round(minutes * rate, 2)
+                tfree_call_count += 1
                 
                 # Store call details
                 results['numbers'][number]['calls'].append({
@@ -116,17 +145,25 @@ class ServiceCompanyBilling:
             # Process regular number calls
             else:
                 # Determine call type and rate
-                if 'Local' in desc:
+                if 'Australia' in desc:  # Check Australia first to avoid matching others
+                    call_type = 'Australia'
+                elif 'Local' in desc:
                     call_type = 'Local'
                 elif 'Mobile' in desc:
                     call_type = 'Mobile'
                 elif 'National' in desc:
                     call_type = 'National'
                 else:
+                    print(f"[DEBUG] Could not determine regular call type from: {desc}")
                     continue
                 
-                rate = self.rates[call_type]
+                rate = self.rates.get(call_type)
+                if not rate:
+                    print(f"[DEBUG] No rate found for call type: {call_type}")
+                    continue
+                    
                 charge = round(minutes * rate, 2)
+                regular_call_count += 1
                 
                 # Store call details
                 results['regular_number']['calls'].append({
@@ -139,9 +176,22 @@ class ServiceCompanyBilling:
                 })
                 results['regular_number']['total'] += charge
         
+        # Debug call counts
+        print(f"[DEBUG] Processed {call_count} total calls: {regular_call_count} regular, {tfree_call_count} TFree")
+        print(f"[DEBUG] Regular number calls: {len(results['regular_number']['calls'])}")
+        for number, data in results['numbers'].items():
+            print(f"[DEBUG] TFree number {number} calls: {len(data['calls'])}")
+        
         # Calculate final total - include base_fee in total but not as separate charge
         calling_total = results['regular_number']['total'] + sum(data['total'] for data in results['numbers'].values())
         results['total'] = calling_total + results['base_fee']  # Add base_fee at the end
+        
+        # Debug final results
+        print(f"[DEBUG] Final results - Base fee: ${results['base_fee']:.2f}")
+        print(f"[DEBUG] Final results - Regular number total: ${results['regular_number']['total']:.2f}")
+        tfree_total = sum(data['total'] for data in results['numbers'].values())
+        print(f"[DEBUG] Final results - TFree numbers total: ${tfree_total:.2f}")
+        print(f"[DEBUG] Final results - Total: ${results['total']:.2f}")
         
         return results
 

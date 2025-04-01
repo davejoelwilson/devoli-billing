@@ -300,8 +300,12 @@ class DevoliBilling:
     def create_xero_invoice(self, customer, customer_data, invoice_params=None):
         """Create a draft invoice in Xero"""
         try:
+            # Check if invoices to The Service Company should be logged without submission
+            debug_tsc_invoices = os.environ.get('DEBUG_TSC_INVOICES', 'false').lower() == 'true'
+            
             # Normalize column names to lowercase for case-insensitive comparison
-            customer_data.columns = customer_data.columns.str.lower()
+            if isinstance(customer_data, pd.DataFrame):
+                customer_data.columns = customer_data.columns.str.lower()
             
             # Validate and set defaults for invoice params
             if invoice_params is None:
@@ -314,7 +318,11 @@ class DevoliBilling:
                     (datetime.now() + timedelta(days=14)).strftime('%Y-%m-%d')),
                 'description': invoice_params.get('description', ''),
                 'line_items': invoice_params.get('line_items', []),
-                'pre_calculated_results': invoice_params.get('pre_calculated_results', None)
+                'pre_calculated_results': invoice_params.get('pre_calculated_results', None),
+                'status': invoice_params.get('status', 'DRAFT'),
+                'type': invoice_params.get('type', 'ACCREC'),
+                'reference': invoice_params.get('reference', f"Devoli Calling Charges - {datetime.now().strftime('%B %Y')}"),
+                'line_amount_types': invoice_params.get('line_amount_types', 'Exclusive')
             }
             
             # Check if this is The Service Company
@@ -327,25 +335,55 @@ class DevoliBilling:
             # Use provided line items if available
             if invoice_params.get('line_items'):
                 line_items = invoice_params['line_items']
-            else:
-                # Calculate charges and format description
-                calling_charges, call_details = self.calculate_call_charges(customer_data)
-                invoice_desc = invoice_params.get('description', '')
-                if not invoice_desc:
-                    invoice_desc = self.format_call_description(call_details)
+                print(f"Using provided line items ({len(line_items)} items)")
                 
-                # Add calling charges line item
-                if calling_charges > 0:
-                    line_items.append({
-                        "Description": invoice_desc,
-                        "Quantity": 1.0,
-                        "UnitAmount": float(calling_charges),
-                        "AccountCode": account_code,
-                        "TaxType": "OUTPUT2"
-                    })
+                # Special logging for TSC
+                if is_service_company:
+                    print(f"The Service Company invoice with {len(line_items)} line items")
+                    # Log each line item for debugging
+                    for i, item in enumerate(line_items):
+                        desc_preview = item.get("Description", "")
+                        if len(desc_preview) > 100:
+                            desc_preview = desc_preview[:97] + "..."
+                        print(f"  Item {i+1}: {desc_preview} - ${item.get('UnitAmount', 0)}")
+                
+                # If this is debug mode for TSC, return a mock invoice
+                if debug_tsc_invoices and is_service_company:
+                    print("DEBUG_TSC_INVOICES is enabled, returning mock invoice")
+                    return {
+                        "Id": "debug-mode",
+                        "Status": "OK",
+                        "Invoices": [
+                            {
+                                "Type": "ACCREC",
+                                "InvoiceID": "debug-mode-id",
+                                "InvoiceNumber": f"DEBUG-{datetime.now().strftime('%Y%m%d%H%M')}",
+                                "Reference": invoice_params.get('reference'),
+                                "LineItems": line_items
+                            }
+                        ]
+                    }
+            else:
+                # Only calculate charges if line items were not provided
+                # Calculate charges and format description 
+                if isinstance(customer_data, pd.DataFrame):
+                    calling_charges, call_details = self.calculate_call_charges(customer_data)
+                    invoice_desc = invoice_params.get('description', '')
+                    if not invoice_desc:
+                        invoice_desc = self.format_call_description(call_details)
+                    
+                    # Add calling charges line item
+                    if calling_charges > 0:
+                        line_items.append({
+                            "Description": invoice_desc,
+                            "Quantity": 1.0,
+                            "UnitAmount": float(calling_charges),
+                            "AccountCode": account_code,
+                            "TaxType": "OUTPUT2"
+                        })
             
             # Skip if no charges or if the total amount is $0
-            if not line_items:
+            if not line_items and isinstance(customer_data, pd.DataFrame):
                 # Check if there's call data before skipping
                 call_mask = customer_data['description'].str.contains('Calls', case=False, na=False)
                 call_data = customer_data[call_mask]
@@ -385,6 +423,11 @@ class DevoliBilling:
                     print(f"ℹ️ Skipping {customer} - $0 invoice (no call data)")
                     return None
                     
+            # Skip completely empty line items
+            if not line_items:
+                print(f"ℹ️ Skipping {customer} - no line items to process")
+                return None
+                
             # Calculate total invoice amount
             total_invoice_amount = sum(item.get("UnitAmount", 0) * item.get("Quantity", 1) for item in line_items)
             
@@ -445,7 +488,8 @@ class DevoliBilling:
                 "Date": invoice_date,
                 "DueDate": due_date,
                 "Reference": invoice_params.get('reference', f"Devoli Calling Charges - {pd.to_datetime(invoice_date).strftime('%B %Y')}"),
-                "Status": invoice_params.get('status', 'DRAFT')
+                "Status": invoice_params.get('status', 'DRAFT'),
+                "LineAmountTypes": invoice_params.get('line_amount_types', 'Exclusive')
             }
             
             # Add debug logging

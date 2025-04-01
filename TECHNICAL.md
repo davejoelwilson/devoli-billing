@@ -28,6 +28,12 @@ The application is structured into several key components:
    - File selection and processing
    - Invoice review and generation
 
+5. **Log Management (`log_database.py`)**
+   - Tracks processed invoices
+   - Manages file processing history
+   - Prevents duplicate processing
+   - Supports multi-month invoice creation
+
 ### Data Flow
 
 1. **Input Processing**
@@ -47,6 +53,11 @@ The application is structured into several key components:
 3. **Invoice Generation**
    ```
    Billing Data → create_xero_invoice() → Xero API → Invoice
+   ```
+
+4. **Log Management**
+   ```
+   Process Result → log_db.mark_invoice_as_processed() → SQLite Database
    ```
 
 ## Implementation Details
@@ -182,6 +193,153 @@ The application automatically applies a 6% discount to all SPARK customers' call
    }
    ```
 
+## The Service Company Special Handling
+
+The application provides special handling for The Service Company with detailed line-item structure in Xero invoices:
+
+### Detection and Processing Flow
+
+1. **Identification**:
+   ```python
+   is_service_company = (
+       customer_name.lower() == 'the service company' or
+       customer_name.lower() == 'the service company limited' or
+       getattr(customer_data, 'is_tsc', False)
+   )
+   ```
+
+2. **Contact Name Handling**:
+   - Always uses the full legal name "The Service Company Limited" for Xero contact
+   - Ensures consistent contact recognition in Xero
+
+3. **Invoice Line Items**:
+   ```python
+   # Base fee line item
+   line_items.append({
+       "Description": "Monthly Charges for Toll Free Numbers (0800 366080, 650252, 753753)",
+       "Quantity": 1.0,
+       "UnitAmount": service_results['base_fee'],  # $55.00
+       "AccountCode": "43850",
+       "TaxType": "OUTPUT2"
+   })
+   
+   # Regular number line item (if calls exist)
+   regular_desc = ['6492003366']
+   for call in service_results['regular_number']['calls']:
+       regular_desc.append(f"{call['type']} Calls ({call['count']} calls - {call['duration']})")
+   
+   line_items.append({
+       "Description": '\n'.join(regular_desc),
+       "Quantity": 1.0,
+       "UnitAmount": service_results['regular_number']['total'],
+       "AccountCode": "43850",
+       "TaxType": "OUTPUT2"
+   })
+   
+   # Individual TFree number line items
+   for number, data in service_results['numbers'].items():
+       if data['calls']:
+           number_desc = [number]
+           for call in data['calls']:
+               number_desc.append(f"{call['type']} ({call['count']} calls - {call['duration']})")
+           
+           line_items.append({
+               "Description": '\n'.join(number_desc),
+               "Quantity": 1.0,
+               "UnitAmount": data['total'],
+               "AccountCode": "43850",
+               "TaxType": "OUTPUT2"
+           })
+   ```
+
+## Log Database Management
+
+The application uses SQLite to track processed invoices and prevent duplicate processing:
+
+### Database Schema
+
+```sql
+-- File processing table
+CREATE TABLE file_processing (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    processing_date TEXT,
+    user_notes TEXT,
+    file_date TEXT
+);
+
+-- Invoice creation table
+CREATE TABLE invoice_creation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_processing_id INTEGER,
+    xero_customer_name TEXT,
+    devoli_customer_names TEXT,
+    invoice_number TEXT,
+    invoice_date TEXT,
+    amount REAL,
+    status TEXT,
+    FOREIGN KEY (file_processing_id) REFERENCES file_processing(id)
+);
+```
+
+### Key Functions
+
+1. **Log File Processing**:
+   ```python
+   def log_file_processing(self, filename):
+       # Creates a new file processing record
+       # Returns the file ID for use in invoice records
+   ```
+
+2. **Mark Invoice as Processed**:
+   ```python
+   def mark_invoice_as_processed(self, xero_customer_name, filename):
+       # Links invoice to file processing record
+       # Sets status to 'processed'
+   ```
+
+3. **Check if Already Processed**:
+   ```python
+   def check_if_processed(self, filename, xero_customer_name):
+       # Checks if exact file+customer combination exists
+       # For non-TSC customers, also checks by month
+       # Allows TSC to be processed in same month with different files
+   ```
+
+4. **Clear File Data**:
+   ```python
+   def clear_file_data(self, file_id):
+       # Removes all processing records for a file
+       # Allows reprocessing
+   ```
+
+## Debugging Utilities
+
+### Debug Scripts
+
+1. **debug_tsc_invoice.py**:
+   - Direct Xero API interaction
+   - Creates TSC invoice with multiple line items
+   - Useful for isolating UI vs. API issues
+
+2. **direct_invoice_fix.py**:
+   - Processes invoice CSV directly
+   - Bypasses Streamlit UI
+   - Useful for testing core processing logic
+
+### Logging
+
+1. **Detailed Debug Logs**:
+   - Includes detailed TSC processing steps
+   - Shows line item generation
+   - Reports Xero API response data
+   - Helps identify issues in multi-step process
+
+2. **Log File Visibility**:
+   - UI shows log status for each file
+   - Indicates which customers are already processed
+   - Provides clear feedback about processing state
+
 ## Testing
 
 ### Unit Tests
@@ -206,6 +364,11 @@ The application automatically applies a 6% discount to all SPARK customers' call
    - Rate limiting
    - Error response processing
 
+3. **TSC Fallback Logic**
+   - Graceful degradation to single line item if needed
+   - Error reporting with clear diagnostics
+   - Prevents complete failure when partial data is available
+
 ## Configuration
 
 ### Required Files
@@ -220,6 +383,7 @@ product_mapping.csv
 XERO_CLIENT_ID
 XERO_CLIENT_SECRET
 XERO_TENANT_ID
+DEBUG_TSC_INVOICES  # Optional - set to 'true' for additional debugging
 ```
 
 ## Performance Considerations
@@ -248,28 +412,15 @@ XERO_TENANT_ID
 
 ## Maintenance
 
-### Regular Tasks
-1. Update rate configurations
-2. Verify customer mappings
-3. Check Xero API version compatibility
-4. Update dependencies
+1. **Updating Rate Tables**
+   - Update the RATES dictionary in `service_company.py`
 
-### Monitoring
-1. Check log files
-2. Monitor invoice creation success rates
-3. Track API response times
+2. **Customer Mapping**
+   - Edit `customer_mapping.csv` to update/add customers
 
-## Future Improvements
-
-1. **Planned Features**
-   - Batch processing improvements
-   - Additional customer special cases
-   - Enhanced error reporting
-
-2. **Technical Debt**
-   - Refactor rate calculations
-   - Improve test coverage
-   - Enhance logging 
+3. **Xero Token Refresh**
+   - Automatic token refresh via `xero_token_manager.py`
+   - Manual refresh with `python test_xero.py`
 
 ## Authentication Flow
 

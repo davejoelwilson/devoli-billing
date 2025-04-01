@@ -10,6 +10,8 @@ A streamlined billing processor for Devoli VoIP services that integrates with Xe
 - Support for toll-free and regular number billing
 - Customer name mapping between Devoli and Xero
 - Detailed call breakdown and charge calculations
+- Log management for processed invoices
+- Multi-month billing support
 
 ## Prerequisites
 
@@ -79,6 +81,25 @@ streamlit run streamlit_app.py
    - Select companies to process
    - Generate Xero invoices
 
+4. Managing Log Files:
+   - Click "Clear Log for This File" to reset processing status for a specific invoice
+   - This allows you to reprocess invoices for different months
+   - The system tracks which customers have been processed for each file
+
+## Utility Scripts
+
+The application includes utility scripts for debugging and direct interaction:
+
+1. **debug_tsc_invoice.py**:
+   - Creates a test invoice for The Service Company directly via Xero API
+   - Useful for testing connection and formatting issues
+   - Run with: `python3 debug_tsc_invoice.py`
+
+2. **direct_invoice_fix.py**:
+   - Processes TSC invoices from CSV files directly
+   - Bypasses the Streamlit UI to troubleshoot issues
+   - Run with: `python3 direct_invoice_fix.py`
+
 ## Invoice Date Logic
 
 The system uses a specific logic for setting invoice dates:
@@ -97,12 +118,16 @@ This ensures consistent invoice dating aligned with billing cycles.
 
 - Base fee of $55.00
 - Separate line items for:
-  - Regular number (6492003366)
-  - Each toll-free number
+  - Monthly base charge line (always $55)
+  - Regular number (6492003366) with call details
+  - Each toll-free number with its own call details
 - Detailed call breakdowns including:
   - Call counts
   - Duration
   - Type (Local, Mobile, National, Australia)
+- Rate structure:
+  - Regular calls: Local $0.05, Mobile $0.12, National $0.05, Australia $0.14
+  - TFree calls: Mobile $0.28, National $0.10, Australia/Other $0.14
 
 ## Special Customer Handling
 
@@ -131,6 +156,16 @@ This ensures consistent invoice dating aligned with billing cycles.
 3. Incorrect Charges:
    - Verify rates in `service_company.py`
    - Check call data format in CSV
+
+4. Invoice Processing Issues:
+   - Check log status using the info message in the UI
+   - Clear logs for the specific file if needed
+   - Use debug scripts for direct testing
+
+5. TSC Line Item Issues:
+   - Ensure the full name "The Service Company Limited" is used in Xero
+   - Check log files for debugging information
+   - Run `debug_tsc_invoice.py` to test direct creation
 
 ## Contributing
 
@@ -207,11 +242,4 @@ Invoice files should:
 - Contain columns:
   - description
   - amount
-  - customer name
-
-## Dependencies
-
-- streamlit
-- pandas
-- plotly
-- python-dateutil 
+  - customer name 
